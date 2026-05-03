@@ -10,6 +10,9 @@ Requires:
 
 Optional:
   export GEMINI_MODEL="gemini-2.0-flash"   # or gemini-1.5-flash, etc.
+
+Also writes a slim CSV next to the main output (see --export-emails): LinkedIn URL,
+Name, Clutch Link, Intro Mail, First Followup, Second Followup — only when generation succeeds.
 """
 from __future__ import annotations
 
@@ -62,6 +65,37 @@ def row_email(row: dict) -> str:
         if key and key.strip().lower() == "email id":
             return (row.get(key) or "").strip()
     return (row.get("Email ID") or row.get("Email") or "").strip()
+
+
+def get_column_ci(row: dict, *candidates: str) -> str:
+    """Return cell for first candidate header that exists on the row (case-insensitive)."""
+    lower_to_actual = {(k or "").strip().lower(): k for k in row}
+    for cand in candidates:
+        key = lower_to_actual.get(cand.strip().lower())
+        if key is not None:
+            return (row.get(key) or "").strip()
+    return ""
+
+
+EXPORT_FIELDNAMES = [
+    "LinkedIn URL",
+    "Name",
+    "Clutch Link",
+    "Intro Mail",
+    "First Followup",
+    "Second Followup",
+]
+
+
+def build_export_row(source_row: dict, rec: dict) -> dict[str, str]:
+    return {
+        "LinkedIn URL": get_column_ci(source_row, "LinkedIn URL", "linkedin url"),
+        "Name": get_column_ci(source_row, "Reviewer Name", "name"),
+        "Clutch Link": get_column_ci(source_row, "CLUTCH LINK", "clutch link"),
+        "Intro Mail": (rec.get("Introductory mail") or "").strip(),
+        "First Followup": (rec.get("1st Followup") or "").strip(),
+        "Second Followup": (rec.get("2nd Followup") or "").strip(),
+    }
 
 
 def prospect_block(row: dict) -> str:
@@ -212,6 +246,14 @@ def main() -> None:
         action="store_true",
         help="If output exists, skip rows that already have Introductory mail filled",
     )
+    ap.add_argument(
+        "--export-emails",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Also write a slim CSV (LinkedIn, Name, Clutch, 3 emails). "
+        "Default: <output_stem>_emails_export.csv next to main output",
+    )
     args = ap.parse_args()
 
     inp = args.input.resolve()
@@ -224,6 +266,13 @@ def main() -> None:
     else:
         out = Path(out)
     out = out.resolve()
+
+    export_emails = args.export_emails
+    if export_emails is None:
+        export_emails = out.with_name(out.stem + "_emails_export.csv")
+    else:
+        export_emails = Path(export_emails)
+    export_emails = export_emails.resolve()
 
     model_name = configure_genai()
     orig_fields, rows = load_csv(inp)
@@ -258,6 +307,13 @@ def main() -> None:
         with out.open("w", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=out_fields, extrasaction="ignore").writeheader()
 
+    if not args.resume:
+        with export_emails.open("w", newline="", encoding="utf-8-sig") as f:
+            csv.DictWriter(f, fieldnames=EXPORT_FIELDNAMES, extrasaction="ignore").writeheader()
+    elif not export_emails.is_file() or export_emails.stat().st_size == 0:
+        with export_emails.open("w", newline="", encoding="utf-8-sig") as f:
+            csv.DictWriter(f, fieldnames=EXPORT_FIELDNAMES, extrasaction="ignore").writeheader()
+
     for row in rows:
         email = row_email(row)
         if not email or not EMAIL_RE.match(email):
@@ -290,6 +346,14 @@ def main() -> None:
 
         with out.open("a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=out_fields, extrasaction="ignore").writerow(rec)
+
+        if not (rec.get("generation_error") or "").strip():
+            lean = build_export_row(row, rec)
+            with export_emails.open("a", newline="", encoding="utf-8-sig") as f:
+                csv.DictWriter(f, fieldnames=EXPORT_FIELDNAMES, extrasaction="ignore").writerow(
+                    lean
+                )
+
         processed += 1
 
         if args.limit and processed >= args.limit:
@@ -298,6 +362,7 @@ def main() -> None:
         time.sleep(max(0.0, args.sleep))
 
     print(f"Done. Wrote {processed} prospect(s) to {out} (model={model_name}).")
+    print(f"Slim export (LinkedIn, Name, Clutch, 3 emails): {export_emails}")
 
 
 if __name__ == "__main__":
