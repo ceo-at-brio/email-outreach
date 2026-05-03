@@ -5,7 +5,7 @@ using prospect rows from the Clutch CSV and the copy rules in email_prompts.py
 (sourced from Email - Prompts.pdf).
 
 Requires:
-  pip install google-generativeai
+  pip install -r requirements.txt   # includes google-generativeai
   export GEMINI_API_KEY="..."
 
 Optional:
