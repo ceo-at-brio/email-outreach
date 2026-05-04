@@ -5,11 +5,19 @@ pandas>=2.0.0
 requests>=2.28.0
 beautifulsoup4>=4.12.0
 dnspython>=2.4.0
+
 # Optional in emails.py (semantic relevance + KeyBERT); large download (~torch + models)
 sentence-transformers>=2.2.0
 keybert>=0.8.0
+
 #
 # generate_emails_gemini.py (Gemini Developer API; replaces deprecated google-generativeai)
 google-genai>=1.0.0
+
+#
+# ai-studio.py (Our POC Script)
+google-generativeai>=0.8.0
+numpy<2.0.0
+
 #
 # generate_outreach_emails.py, email_prompts.py, main.py — stdlib only

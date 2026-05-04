@@ -1,17 +1,25 @@
 import pandas as pd
-import google.generativeai as genai
 import time
 import os
-from google.api_core.exceptions import ResourceExhausted
+import json
+from datetime import datetime
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
 # ==========================================
 # 1. CONFIGURATION & SETUP
 # ==========================================
-API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
-genai.configure(api_key=API_KEY)
+API_KEY = "AIzaSyBiup-AaqYKz1EKDPX7v7oTepwVaL3Jduc"
+
+# Initialize the NEW Google GenAI client
+client = genai.Client(api_key=API_KEY)
 
 INPUT_CSV = "Email - 3rd May - 27_4.csv"
-OUTPUT_CSV = "Generated_Emails_POC_Output.csv"
+
+# Add dynamic timestamp to the output filename
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_CSV = f"Generated_Emails_POC_Output_{timestamp}.csv"
 
 SYSTEM_INSTRUCTION = """
 You are Parag, Founder of SoftwareBrio. You write highly engaging, ultra-concise, and classy cold emails. 
@@ -20,9 +28,9 @@ Rule 2: Do NOT include conversational filler like "Here is the email".
 Rule 3: Output ONLY the raw email text, ready to be sent.
 """
 
-model = genai.GenerativeModel(
-    "gemini-1.5-pro",
-    system_instruction=SYSTEM_INSTRUCTION
+# In the new SDK, system instructions are passed via a config object
+config = types.GenerateContentConfig(
+    system_instruction=SYSTEM_INSTRUCTION,
 )
 
 # ==========================================
@@ -72,25 +80,32 @@ Constraints:
 # ==========================================
 def clean_text(text):
     """Removes markdown blocks if the AI accidentally includes them."""
-    return text.replace("```text", "").replace("```html", "").replace("```", "").strip()
+    if not text:
+        return ""
+    return text.replace("```text", "").replace("```json", "").replace("```html", "").replace("```", "").strip()
 
 
 def send_message_with_retry(chat_session, prompt, retries=3):
-    """Handles API Rate Limits (429 errors) safely by waiting and retrying."""
+    """Handles API Rate Limits safely using the new SDK's error handling."""
     delay = 5
     for attempt in range(retries):
         try:
             response = chat_session.send_message(prompt)
-            # Check if safety filters blocked the response
-            if not response.parts:
+            if not response.text:
                 return "ERROR: Response blocked by safety filters."
             return response.text
-        except ResourceExhausted:
-            print(f"    [~] Rate limit hit. Waiting {delay} seconds before retrying...")
-            time.sleep(delay)
-            delay *= 2  # Exponential backoff (5s, 10s, 20s)
+
+        except APIError as e:
+            # Code 429 means "Too Many Requests" (Rate Limit)
+            if e.code == 429:
+                print(f"    [~] Rate limit hit (429). Waiting {delay} seconds before retrying...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff (5s, 10s, 20s)
+            else:
+                return f"ERROR: API Error {e.code}: {e.message}"
         except Exception as e:
             return f"ERROR: {str(e)}"
+
     return "ERROR: Max retries exceeded."
 
 
@@ -138,23 +153,23 @@ def main():
     df_filtered['Generated_Followup_1'] = ""
     df_filtered['Generated_Followup_2'] = ""
 
-    # Use enumerate to get a clean 1 through 10 counter (i)
     for i, (index, row) in enumerate(df_filtered.iterrows(), start=1):
 
-        # Clean variables safely
         name = str(row.get('Reviewer Name', '')).strip()
-        # Handle cases where pandas read an empty cell as the float 'nan'
         first_name = name.split()[0] if name and name.lower() != 'nan' else "There"
         company = str(row.get('Reviewer Company', '')).strip()
         reachout = str(row.get('Reach-out Message', '')).strip()
         review = str(row.get('Review Text', '')).strip()
         about = str(row.get('linkedin company about ', '')).strip()
 
+        print(f"\n=======================================================")
         print(f"Processing ({i}/10): {first_name} at {company}")
+        print(f"=======================================================")
 
         lead_context = f"CONTEXT FOR THIS LEAD -> Name: {name}, Company: {company}, Past Msg: {reachout}, Project Review: {review}, Company About: {about}."
 
-        chat = model.start_chat(history=[])
+        # Start a fresh chat using the new SDK format
+        chat = client.chats.create(model="gemini-2.5-pro", config=config)
 
         # 1. Intro
         intro_msg = generate_with_length_check(
@@ -186,9 +201,22 @@ def main():
             fu2_msg = "Skipped due to Follow-up 1 error"
         df_filtered.at[index, 'Generated_Followup_2'] = fu2_msg
 
+        # --- LIVE JSON CONSOLE PRINTING ---
+        output_json = {
+            "Lead": f"{first_name} at {company}",
+            "Emails": {
+                "Intro": intro_msg,
+                "Follow-up_1": fu1_msg,
+                "Follow-up_2": fu2_msg
+            }
+        }
+        print(json.dumps(output_json, indent=4, ensure_ascii=False))
+        # ----------------------------------
+
         # Sleep 12 seconds to respect Gemini Free Tier 15 RPM limits
-        # (3 API calls per lead = ~15 API calls per minute)
-        time.sleep(12)
+        if i < len(df_filtered):  # No need to sleep after the very last item
+            print(f"Waiting 12 seconds for rate limits...")
+            time.sleep(12)
 
     df_filtered.to_csv(OUTPUT_CSV, index=False)
     print(f"\n✅ Done! Generated POC emails saved to {OUTPUT_CSV}")
