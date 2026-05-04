@@ -9,7 +9,7 @@ dnspython>=2.4.0
 sentence-transformers>=2.2.0
 keybert>=0.8.0
 #
-# generate_emails_gemini.py
-google-generativeai>=0.8.0
+# generate_emails_gemini.py (Gemini Developer API; replaces deprecated google-generativeai)
+google-genai>=1.0.0
 #
 # generate_outreach_emails.py, email_prompts.py, main.py — stdlib only

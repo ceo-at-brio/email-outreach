@@ -5,11 +5,21 @@ using prospect rows from the Clutch CSV and the copy rules in email_prompts.py
 (sourced from Email - Prompts.pdf).
 
 Requires:
-  pip install -r requirements.txt   # includes google-generativeai
-  export GEMINI_API_KEY="..."
+  pip install -r requirements.txt   # includes google-genai
+  API key (first match wins):
+    - ``--api-key`` flag, or
+    - ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY`` in the environment, or
+    - a ``.env`` file in the project directory or current working directory:
+        GEMINI_API_KEY=your-key
+  Key: https://aistudio.google.com/apikey
 
-Optional:
-  export GEMINI_MODEL="gemini-2.0-flash"   # or gemini-1.5-flash, etc.
+PyCharm does not inherit variables from Terminal; use Run → Environment variables,
+``--api-key``, or a ``.env`` file next to this script.
+
+Python 3.10+ recommended (3.9 works but Google libraries warn it is EOL).
+
+Uses Gemini model ``gemini-2.5-flash`` by default (``gemini-2.0-flash`` is not available
+to new API keys). To override, set GEMINI_MODEL.
 
 Also writes a slim CSV next to the main output (see --export-emails): LinkedIn URL,
 Name, Clutch Link, Intro Mail, First Followup, Second Followup — only when generation succeeds.
@@ -32,15 +42,50 @@ from email_prompts import (
 )
 
 try:
-    import google.generativeai as genai
+    from google import genai as genai_client
+    from google.genai import types as genai_types
 except ImportError as e:  # pragma: no cover
     raise SystemExit(
-        "Missing dependency: pip install google-generativeai\n" + str(e)
+        "Missing dependency: pip install -r requirements.txt\n" + str(e)
     ) from e
 
 
 JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+# Default Generative Language API model (no GEMINI_MODEL env required).
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
+
+def load_dotenv_files() -> None:
+    """Load KEY=VALUE lines from .env into os.environ if the key is not already set."""
+    roots = [Path(__file__).resolve().parent, Path.cwd()]
+    for root in roots:
+        path = root / ".env"
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            val = val.strip()
+            if (val.startswith('"') and val.endswith('"')) or (
+                val.startswith("'") and val.endswith("'")
+            ):
+                val = val[1:-1]
+            os.environ[key] = val
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
@@ -115,40 +160,69 @@ def prospect_block(row: dict) -> str:
     return json.dumps(out, indent=2, ensure_ascii=False)
 
 
-def configure_genai() -> str:
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise SystemExit("Set GEMINI_API_KEY in the environment.")
-    genai.configure(api_key=api_key)
-    return os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()
+def configure_client(api_key: str | None = None) -> tuple[Any, str]:
+    """Return (genai.Client, model_id). Resolves API key from arg, env, or .env (see load_dotenv_files)."""
+    key = (api_key or "").strip()
+    if not key:
+        key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        key = os.environ.get("GOOGLE_API_KEY", "").strip()
+    if not key:
+        raise SystemExit(
+            "No Gemini API key found.\n"
+            "  1) Create a file named .env in the email-outreach folder containing:\n"
+            "       GEMINI_API_KEY=your-key\n"
+            "  2) Or use:  export GEMINI_API_KEY=\"your-key\"  in the same terminal you use to run python\n"
+            "  3) Or pass:  --api-key \"your-key\"\n"
+            "  4) PyCharm: Run → Edit Configurations → Environment variables → GEMINI_API_KEY\n"
+            "  Key: https://aistudio.google.com/apikey"
+        )
+    client = genai_client.Client(api_key=key)
+    model_name = (
+        os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+        or DEFAULT_GEMINI_MODEL
+    )
+    return client, model_name
 
 
-def generate_content(model_name: str, system: str, user: str, retries: int = 4) -> str:
-    generation_config = genai.GenerationConfig(
-        response_mime_type="application/json",
-    )
-    model = genai.GenerativeModel(
-        model_name,
-        generation_config=generation_config,
-    )
+def _response_text(resp: Any) -> str:
+    text = (getattr(resp, "text", None) or "").strip()
+    if text:
+        return text
+    candidates = getattr(resp, "candidates", None) or []
+    parts: list[str] = []
+    for c in candidates:
+        content = getattr(c, "content", None)
+        if content is None:
+            continue
+        for p in getattr(content, "parts", []) or []:
+            t = getattr(p, "text", None)
+            if t:
+                parts.append(t)
+    return "\n".join(parts).strip()
+
+
+def generate_content(
+    client: Any, model_name: str, system: str, user: str, retries: int = 4
+) -> str:
     full = (
         system.strip()
         + "\n\nYou must reply with a single valid JSON object only "
         "(no markdown fences, no commentary).\n\n--- Prospect ---\n\n"
         + user.strip()
     )
+    config = genai_types.GenerateContentConfig(
+        response_mime_type="application/json",
+    )
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
-            resp = model.generate_content(full)
-            text = (resp.text or "").strip()
-            if not text and resp.candidates:
-                parts = []
-                for c in resp.candidates:
-                    for p in getattr(c, "content", {}).get("parts", []) if hasattr(c, "content") else []:
-                        if hasattr(p, "text") and p.text:
-                            parts.append(p.text)
-                text = "\n".join(parts).strip()
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=full,
+                config=config,
+            )
+            text = _response_text(resp)
             if not text:
                 raise ValueError("Gemini returned no text (check safety filters / prompt).")
             return text
@@ -159,7 +233,7 @@ def generate_content(model_name: str, system: str, user: str, retries: int = 4) 
     raise last_err
 
 
-def gen_intro(model_name: str, prospect: str) -> tuple[str, str, str]:
+def gen_intro(client: Any, model_name: str, prospect: str) -> tuple[str, str, str]:
     system = INTRO_EMAIL_INSTRUCTIONS + """
 
 Return JSON with exactly these keys:
@@ -168,7 +242,7 @@ Return JSON with exactly these keys:
 
 Follow the client's rules above; stay within their stated character limits if humanly possible
 without dropping required elements."""
-    raw = generate_content(model_name, system, prospect)
+    raw = generate_content(client, model_name, system, prospect)
     data = parse_json_response(raw)
     sub = str(data.get("subject_line", "")).strip()
     body = str(data.get("email_body", "")).strip()
@@ -176,7 +250,7 @@ without dropping required elements."""
     return sub, body, intro_mail
 
 
-def gen_followup_1(model_name: str, prospect: str, intro_mail: str) -> str:
+def gen_followup_1(client: Any, model_name: str, prospect: str, intro_mail: str) -> str:
     system = FIRST_FOLLOWUP_INSTRUCTIONS + """
 
 Return JSON with exactly one key:
@@ -184,13 +258,17 @@ Return JSON with exactly one key:
 
 Do not repeat praise from the intro. The intro you already sent is provided for context only."""
     user = prospect + "\n\n--- Introductory mail already sent ---\n\n" + intro_mail
-    raw = generate_content(model_name, system, user)
+    raw = generate_content(client, model_name, system, user)
     data = parse_json_response(raw)
     return str(data.get("first_followup", "")).strip()
 
 
 def gen_followup_2(
-    model_name: str, prospect: str, intro_mail: str, first_followup: str
+    client: Any,
+    model_name: str,
+    prospect: str,
+    intro_mail: str,
+    first_followup: str,
 ) -> str:
     system = SECOND_FOLLOWUP_INSTRUCTIONS + """
 
@@ -205,7 +283,7 @@ Continue the thread: do not repeat sentences from earlier mails; build on them."
         + "\n\n--- First follow-up ---\n\n"
         + first_followup
     )
-    raw = generate_content(model_name, system, user)
+    raw = generate_content(client, model_name, system, user)
     data = parse_json_response(raw)
     return str(data.get("second_followup", "")).strip()
 
@@ -254,7 +332,15 @@ def main() -> None:
         help="Also write a slim CSV (LinkedIn, Name, Clutch, 3 emails). "
         "Default: <output_stem>_emails_export.csv next to main output",
     )
+    ap.add_argument(
+        "--api-key",
+        default=None,
+        metavar="KEY",
+        help="Gemini API key (otherwise GEMINI_API_KEY / GOOGLE_API_KEY / .env)",
+    )
     args = ap.parse_args()
+
+    load_dotenv_files()
 
     inp = args.input.resolve()
     if not inp.is_file():
@@ -274,7 +360,7 @@ def main() -> None:
         export_emails = Path(export_emails)
     export_emails = export_emails.resolve()
 
-    model_name = configure_genai()
+    client, model_name = configure_client(api_key=args.api_key)
     orig_fields, rows = load_csv(inp)
 
     extra = [
@@ -328,14 +414,16 @@ def main() -> None:
         rec["generation_error"] = ""
 
         try:
-            sub, _body, intro_mail = gen_intro(model_name, prospect)
+            sub, _body, intro_mail = gen_intro(client, model_name, prospect)
             rec["Subject"] = sub
             rec["Introductory mail"] = intro_mail
             time.sleep(max(0.0, args.sleep))
-            rec["1st Followup"] = gen_followup_1(model_name, prospect, intro_mail)
+            rec["1st Followup"] = gen_followup_1(
+                client, model_name, prospect, intro_mail
+            )
             time.sleep(max(0.0, args.sleep))
             rec["2nd Followup"] = gen_followup_2(
-                model_name, prospect, intro_mail, rec["1st Followup"]
+                client, model_name, prospect, intro_mail, rec["1st Followup"]
             )
         except Exception as e:
             rec["generation_error"] = str(e)
