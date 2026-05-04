@@ -2,6 +2,7 @@ import pandas as pd
 import time
 import os
 import json
+import re
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -10,16 +11,15 @@ from google.genai.errors import APIError
 # ==========================================
 # 1. CONFIGURATION & SETUP
 # ==========================================
-API_KEY = "AIzaSyBiup-AaqYKz1EKDPX7v7oTepwVaL3Jduc"
+API_KEY = "AIzaSyAu9b12ql2Qkh4Ro-X7eTllbvzj_8-_maI"
 
-# Initialize the NEW Google GenAI client
 client = genai.Client(api_key=API_KEY)
 
 INPUT_CSV = "Email - 3rd May - 27_4.csv"
-
-# Add dynamic timestamp to the output filename
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_CSV = f"Generated_Emails_POC_Output_{timestamp}.csv"
+
+BANNED_WORDS = ["curious", "excited", "keen", "proposal", "outsource", "synergy"]
 
 SYSTEM_INSTRUCTION = """
 You are Parag, Founder of SoftwareBrio. You write highly engaging, ultra-concise, and classy cold emails. 
@@ -28,50 +28,60 @@ Rule 2: Do NOT include conversational filler like "Here is the email".
 Rule 3: Output ONLY the raw email text, ready to be sent.
 """
 
-# In the new SDK, system instructions are passed via a config object
 config = types.GenerateContentConfig(
     system_instruction=SYSTEM_INSTRUCTION,
+    temperature=0.7
 )
 
 # ==========================================
 # 2. PROMPT TEMPLATES
 # ==========================================
 INTRO_PROMPT = """
-Write a warm, expert-led outreach email using this structure:
-Subject Line: A short 'Google Hook' (e.g., 'Google-scale systems for {company}').
-First Para: 1-sentence genuine compliment based on their work/company. Then use this logic: 'At Google, I saw how fast growth usually leads to [Headache 1] and[Headache 2]. Those are exactly the kinds of technical hurdles we solve at SoftwareBrio.' (Tailor the headaches to their specific profile).
-Second Para: Offer a free tech proposal to simplify operations.
-Closing: Ask for a brief intro meeting in the coming days.
+Write a warm, expert-led outreach email from Parag (ex-Google, Founder of SoftwareBrio). 
+
+Structure:
+Subject:[2-4 words, lowercase, internal memo style (e.g., "scaling {company}")]
+Body:[1 casual sentence opening. IF LIVE GOOGLE SEARCH shows a recent milestone, mention it. IF NOT, compliment their core product.][The Pivot: "At Google, I saw firsthand how scaling products like yours often leads to <b>[Specific Tech Headache 1]</b> and <b>[Specific Tech Headache 2]</b>. We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this."][The Ask: "Are you exploring external engineering bandwidth to accelerate your upcoming features?"]
+
+[Closing: "Open to comparing notes next week?"]
 
 Constraints:
-* MUST be strictly under 350 characters total.
-* No sales pitch, no links, no words like "curious", "excited", or "keen".
-* Feel peer-to-peer.
+* Under 75 words total.
+* FORMATTING: MUST start with 'Subject: ' followed by a new line for the body. Use double line breaks (\n\n) between every sentence in the body.
+* BOLDING: Use HTML <b> tags around the technical headaches. Do NOT bold anything else.
+* Tone: Founder-to-Founder. Casual, confident.
+* Do NOT use banned words: curious, excited, keen, proposal, outsource.
 """
 
 FOLLOWUP_1_PROMPT = """
-Write an email follow-up message strictly under 300 characters.
-Start with "Hi {first_name}, Following up on my previous mail." (Do not praise them).
-Share a unique insight/tip relevant to their profile. Briefly mention how we can help.
-Ask: "Do you or your ventures outsource AI or Software development work?"
-Ask for a short call to explore synergies.
-Sign off exactly as: "Parag | Linkedin Founder, SoftwareBrio.com Built by ex-Meta & Google engineers"
+Write an email follow-up message.
+
+Structure:
+* Start: "Hi {first_name}, I was thinking more about [Mention a specific product feature or workflow from their Company About / Project Review data]." 
+* Value Drop: Provide one 1-sentence insight on how elite engineering teams tackle that specific workflow, using <b>HTML bold tags</b> around the specific technical solution (e.g., <b>caching strategies</b>).
+* The Ask: "If expanding your tech bandwidth is on your radar, I'd love to share how our ex-FAANG team handles this. Worth a 10-min chat?"
+* Sign-off: "Parag | Founder, SoftwareBrio.com"
 
 Constraints:
-* Strictly under 300 characters.
-* Short, classy, optimized for mobile screens.
+* Under 60 words. No fluff. 
+* FORMATTING: Use double line breaks (\n\n) between every sentence.
+* BOLDING: Only bold the technical solution.
+* Do NOT use banned words.
 """
 
 FOLLOWUP_2_PROMPT = """
-Write an engaging 2nd follow-up mail to force a reply.
-Start with: "Hi {first_name}, Hope you're doing well! Following up on my previous mail!"
-Take an idea from their profile and state specifically how SoftwareBrio can actually help them. Tie it back to the previous messages so it proves we are noticing and not AI spamming.
-Ask for a 15-min call—no strings attached.
-End exactly with: "Best, Parag, Google | Founder, SoftwareBrio.com"
+Write a final, punchy follow-up mail designed to force a reply.
+
+Structure:
+* Start: "Hi {first_name}, wrapping up my outreach here."
+* The Hook: Synthesize their Company About and Live Research to pitch ONE highly specific tech/AI feature idea for their platform. Put <b>HTML bold tags</b> around the specific feature name.
+* The Ask: "If you're ever looking for a reliable, ex-FAANG dev team to build features like that fast, keep us in mind. Open to a quick intro call so I can put a face to the name?"
+* End exactly with: "Best, Parag (Ex-Google)"
 
 Constraints:
-* Strictly less than 260 characters.
-* Immediate value, highly relevant to their specific work.
+* Under 50 words.
+* FORMATTING: Use double line breaks (\n\n) between every sentence.
+* Do NOT use banned words.
 """
 
 
@@ -79,14 +89,49 @@ Constraints:
 # 3. HELPER FUNCTIONS
 # ==========================================
 def clean_text(text):
-    """Removes markdown blocks if the AI accidentally includes them."""
     if not text:
         return ""
     return text.replace("```text", "").replace("```json", "").replace("```html", "").replace("```", "").strip()
 
 
+def contains_banned_words(text):
+    text_lower = text.lower()
+    return any(word in text_lower for word in BANNED_WORDS)
+
+
+def research_lead_with_google(name, company, retries=3):
+    """Fetches live data with API Error/Rate Limit handling."""
+    research_prompt = f"Use Google Search to find recent news, product launches, or key focus areas for {name} at '{company}'. Keep it to 2-3 bullet points of business context. If you can't find the person, just summarize what the company does currently."
+
+    search_config = types.GenerateContentConfig(
+        tools=[types.Tool(google_search=types.GoogleSearch())],
+        temperature=0.2
+    )
+
+    delay = 5
+    for attempt in range(retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=research_prompt,
+                config=search_config
+            )
+            if response.text:
+                return response.text.strip()
+        except APIError as e:
+            if e.code == 429:
+                print(f"    [~] Search Rate limit hit (429). Waiting {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+            else:
+                return f"(Live research failed: API Error {e.code})"
+        except Exception as e:
+            return f"(Live research failed: {str(e)})"
+
+    return "(No recent live data found - Max retries hit)"
+
+
 def send_message_with_retry(chat_session, prompt, retries=3):
-    """Handles API Rate Limits safely using the new SDK's error handling."""
     delay = 5
     for attempt in range(retries):
         try:
@@ -94,43 +139,56 @@ def send_message_with_retry(chat_session, prompt, retries=3):
             if not response.text:
                 return "ERROR: Response blocked by safety filters."
             return response.text
-
         except APIError as e:
-            # Code 429 means "Too Many Requests" (Rate Limit)
             if e.code == 429:
-                print(f"    [~] Rate limit hit (429). Waiting {delay} seconds before retrying...")
+                print(f"    [~] Chat Rate limit hit (429). Waiting {delay}s...")
                 time.sleep(delay)
-                delay *= 2  # Exponential backoff (5s, 10s, 20s)
+                delay *= 2
             else:
                 return f"ERROR: API Error {e.code}: {e.message}"
         except Exception as e:
             return f"ERROR: {str(e)}"
-
     return "ERROR: Max retries exceeded."
 
 
-def generate_with_length_check(chat_session, prompt, max_length, retries=2):
-    """Forces the AI to rewrite the email if it exceeds the character limit."""
+def generate_with_constraints(chat_session, prompt, max_words, retries=3):
+    """Forces rewrites for length AND banned words."""
     raw_text = send_message_with_retry(chat_session, prompt)
-
-    if "ERROR:" in raw_text:
-        return raw_text
-
+    if "ERROR:" in raw_text: return raw_text
     email_text = clean_text(raw_text)
 
     attempts = 0
-    while len(email_text) > max_length and attempts < retries:
-        print(f"    [!] Length {len(email_text)} exceeds {max_length}. Forcing rewrite...")
-        correction_prompt = f"Your last response was {len(email_text)} characters. It MUST be strictly under {max_length} characters. Cut words to make it shorter without losing the core meaning. Output ONLY the email."
+    while attempts < retries:
+        word_count = len(email_text.split())
+        has_banned = contains_banned_words(email_text)
 
-        raw_text = send_message_with_retry(chat_session, correction_prompt)
-        if "ERROR:" in raw_text:
-            return raw_text
+        if word_count <= max_words and not has_banned:
+            break  # Passes all checks!
 
+        print(
+            f"    [!] Constraint failed (Words: {word_count}/{max_words} | Banned Words: {has_banned}). Forcing rewrite...")
+        correction = f"Your last response failed constraints. It MUST be under {max_words} words. It MUST NOT use any of these words: {', '.join(BANNED_WORDS)}. Keep the HTML bolding and double line breaks. Output ONLY the email."
+
+        raw_text = send_message_with_retry(chat_session, correction)
+        if "ERROR:" in raw_text: return raw_text
         email_text = clean_text(raw_text)
         attempts += 1
 
     return email_text
+
+
+def split_subject_and_body(email_text):
+    """Splits the intro email so Outreach tools can read the Subject Line."""
+    if "ERROR:" in email_text:
+        return "ERROR", email_text
+
+    # Regex to find "Subject: [text]" and split the rest into the body
+    match = re.search(r'(?i)^(?:subject:\s*)(.*?)(?:\r?\n)+(.*)', email_text, re.DOTALL)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+
+    # Fallback if AI didn't write "Subject:"
+    return "quick question", email_text.strip()
 
 
 # ==========================================
@@ -143,15 +201,17 @@ def main():
         print(f"Error: Could not find {INPUT_CSV}")
         return
 
-    # Filter out invalid emails and grab the first 10
     df_filtered = df.dropna(subset=['Email ID']).copy()
-    df_filtered = df_filtered.head(10)
+    df_filtered = df_filtered.head(10)  # POC LIMIT
 
     print(f"Found {len(df_filtered)} valid leads for the POC. Starting generation...\n")
 
-    df_filtered['Generated_Intro'] = ""
+    # Split Intro into two columns for your sending platform
+    df_filtered['Intro_Subject'] = ""
+    df_filtered['Intro_Body'] = ""
     df_filtered['Generated_Followup_1'] = ""
     df_filtered['Generated_Followup_2'] = ""
+    df_filtered['Live_Research_Data'] = ""
 
     for i, (index, row) in enumerate(df_filtered.iterrows(), start=1):
 
@@ -164,27 +224,31 @@ def main():
 
         print(f"\n=======================================================")
         print(f"Processing ({i}/10): {first_name} at {company}")
-        print(f"=======================================================")
 
-        lead_context = f"CONTEXT FOR THIS LEAD -> Name: {name}, Company: {company}, Past Msg: {reachout}, Project Review: {review}, Company About: {about}."
+        print(f"[*] Running live Google Search for context...")
+        live_research = research_lead_with_google(name, company)
+        df_filtered.at[index, 'Live_Research_Data'] = live_research
 
-        # Start a fresh chat using the new SDK format
+        lead_context = f"CONTEXT FOR THIS LEAD:\nName: {name}\nCompany: {company}\nPast Msg: {reachout}\nProject Review: {review}\nCompany About: {about}\n\nLIVE GOOGLE SEARCH RESEARCH:\n{live_research}"
+
         chat = client.chats.create(model="gemini-2.5-pro", config=config)
 
         # 1. Intro
-        intro_msg = generate_with_length_check(
+        raw_intro = generate_with_constraints(
             chat,
             lead_context + "\n\n" + INTRO_PROMPT.format(company=company),
-            max_length=350
+            max_words=75
         )
-        df_filtered.at[index, 'Generated_Intro'] = intro_msg
+        subject, body = split_subject_and_body(raw_intro)
+        df_filtered.at[index, 'Intro_Subject'] = subject
+        df_filtered.at[index, 'Intro_Body'] = body
 
         # 2. Follow-up 1
-        if "ERROR:" not in intro_msg:
-            fu1_msg = generate_with_length_check(
+        if "ERROR:" not in raw_intro:
+            fu1_msg = generate_with_constraints(
                 chat,
                 FOLLOWUP_1_PROMPT.format(first_name=first_name),
-                max_length=300
+                max_words=60
             )
         else:
             fu1_msg = "Skipped due to Intro error"
@@ -192,10 +256,10 @@ def main():
 
         # 3. Follow-up 2
         if "ERROR:" not in fu1_msg:
-            fu2_msg = generate_with_length_check(
+            fu2_msg = generate_with_constraints(
                 chat,
                 FOLLOWUP_2_PROMPT.format(first_name=first_name),
-                max_length=260
+                max_words=50
             )
         else:
             fu2_msg = "Skipped due to Follow-up 1 error"
@@ -204,8 +268,10 @@ def main():
         # --- LIVE JSON CONSOLE PRINTING ---
         output_json = {
             "Lead": f"{first_name} at {company}",
+            "Live_Research_Found": live_research,
             "Emails": {
-                "Intro": intro_msg,
+                "Subject": subject,
+                "Intro_Body": body,
                 "Follow-up_1": fu1_msg,
                 "Follow-up_2": fu2_msg
             }
@@ -213,10 +279,10 @@ def main():
         print(json.dumps(output_json, indent=4, ensure_ascii=False))
         # ----------------------------------
 
-        # Sleep 12 seconds to respect Gemini Free Tier 15 RPM limits
-        if i < len(df_filtered):  # No need to sleep after the very last item
-            print(f"Waiting 12 seconds for rate limits...")
-            time.sleep(12)
+        # Sleep 17 seconds to respect Free Tier limits
+        if i < len(df_filtered):
+            print(f"Waiting 17 seconds for rate limits...")
+            time.sleep(17)
 
     df_filtered.to_csv(OUTPUT_CSV, index=False)
     print(f"\n✅ Done! Generated POC emails saved to {OUTPUT_CSV}")
