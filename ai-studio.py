@@ -11,7 +11,7 @@ from google.genai.errors import APIError
 # ==========================================
 # 1. CONFIGURATION & SETUP
 # ==========================================
-API_KEY = "AIzaSyAu9b12ql2Qkh4Ro-X7eTllbvzj_8-_maI"
+API_KEY = "AIzaSyDAKA7VNGuZWXcZLL6b_nm-tKgMh3_VK_M"
 
 client = genai.Client(api_key=API_KEY)
 
@@ -41,9 +41,7 @@ Write a warm, expert-led outreach email from Parag (ex-Google, Founder of Softwa
 
 Structure:
 Subject:[2-4 words, lowercase, internal memo style (e.g., "scaling {company}")]
-Body:[1 casual sentence opening. IF LIVE GOOGLE SEARCH shows a recent milestone, mention it. IF NOT, compliment their core product.][The Pivot: "At Google, I saw firsthand how scaling products like yours often leads to <b>[Specific Tech Headache 1]</b> and <b>[Specific Tech Headache 2]</b>. We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this."][The Ask: "Are you exploring external engineering bandwidth to accelerate your upcoming features?"]
-
-[Closing: "Open to comparing notes next week?"]
+Body:[1 casual sentence opening. IF LIVE GOOGLE SEARCH shows a recent milestone, mention it. IF NOT, compliment their core product.][The Pivot: "At Google, I saw firsthand how scaling products like yours often leads to <b>[Specific Tech Headache 1]</b> and <b>[Specific Tech Headache 2]</b>. We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this."][The Ask: "Are you exploring external engineering bandwidth to accelerate your upcoming features?"][Closing: "Open to comparing notes next week?"]
 
 Constraints:
 * Under 75 words total.
@@ -57,7 +55,7 @@ FOLLOWUP_1_PROMPT = """
 Write an email follow-up message.
 
 Structure:
-* Start: "Hi {first_name}, I was thinking more about [Mention a specific product feature or workflow from their Company About / Project Review data]." 
+* Start: "Hi {first_name}, I was thinking more about[Mention a specific product feature or workflow from their Company About / Project Review data]." 
 * Value Drop: Provide one 1-sentence insight on how elite engineering teams tackle that specific workflow, using <b>HTML bold tags</b> around the specific technical solution (e.g., <b>caching strategies</b>).
 * The Ask: "If expanding your tech bandwidth is on your radar, I'd love to share how our ex-FAANG team handles this. Worth a 10-min chat?"
 * Sign-off: "Parag | Founder, SoftwareBrio.com"
@@ -99,13 +97,28 @@ def contains_banned_words(text):
     return any(word in text_lower for word in BANNED_WORDS)
 
 
-def research_lead_with_google(name, company, retries=3):
-    """Fetches live data with API Error/Rate Limit handling."""
-    research_prompt = f"Use Google Search to find recent news, product launches, or key focus areas for {name} at '{company}'. Keep it to 2-3 bullet points of business context. If you can't find the person, just summarize what the company does currently."
+def research_lead_with_google(name, company, linkedin_url, retries=3):
+    """Uses Gemini's native Google Search grounding with LinkedIn URL verification."""
+
+    research_prompt = f"""
+    Use Google Search to find recent news, product launches, or technical milestones for '{name}' at the company '{company}'. 
+
+    CRITICAL IDENTITY ANCHOR:
+    Their exact LinkedIn profile URL is: {linkedin_url}
+    Use the data indexed at this URL to verify you are researching the correct person and company.
+
+    STRICT RULES:
+    1. Focus heavily on '{company}'. 
+    2. If you find recent news specifically involving '{name}' at '{company}', include it. 
+    3. WARNING: Do NOT confuse '{name}' with someone else who has the same name. If the search results do not align with the provided LinkedIn URL, DO NOT mention the person.
+    4. If you cannot find recent news, just summarize the company's core product and target audience.
+
+    Return 2-3 bullet points of highly relevant business context.
+    """
 
     search_config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())],
-        temperature=0.2
+        temperature=0.0  # Zero creativity, strict facts only
     )
 
     delay = 5
@@ -222,14 +235,19 @@ def main():
         review = str(row.get('Review Text', '')).strip()
         about = str(row.get('linkedin company about ', '')).strip()
 
+        # --- NEW: Extract the LinkedIn URL ---
+        linkedin_url = str(row.get('LinkedIn URL', '')).strip()
+
         print(f"\n=======================================================")
         print(f"Processing ({i}/10): {first_name} at {company}")
 
-        print(f"[*] Running live Google Search for context...")
-        live_research = research_lead_with_google(name, company)
+        print(f"[*] Running live Google Search for context (Verified via LinkedIn)...")
+        # --- NEW: Pass the URL to the research function ---
+        live_research = research_lead_with_google(name, company, linkedin_url)
         df_filtered.at[index, 'Live_Research_Data'] = live_research
 
-        lead_context = f"CONTEXT FOR THIS LEAD:\nName: {name}\nCompany: {company}\nPast Msg: {reachout}\nProject Review: {review}\nCompany About: {about}\n\nLIVE GOOGLE SEARCH RESEARCH:\n{live_research}"
+        # Inject the live research and LinkedIn URL into the context!
+        lead_context = f"CONTEXT FOR THIS LEAD:\nName: {name}\nLinkedIn: {linkedin_url}\nCompany: {company}\nPast Msg: {reachout}\nProject Review: {review}\nCompany About: {about}\n\nLIVE GOOGLE SEARCH RESEARCH:\n{live_research}"
 
         chat = client.chats.create(model="gemini-2.5-pro", config=config)
 
