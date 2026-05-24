@@ -18,6 +18,13 @@ INPUT_CSV = "Email - 3rd May - 27_4.csv"
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_CSV = f"Generated_Emails_POC_Output_{timestamp}.csv"
 
+# Consistent sign-off appended to every email programmatically.
+# "LinkedIn" is a hyperlink — keep it as an HTML anchor so Apollo renders it clickable.
+SIGNATURE = (
+    'Parag | <a href="https://www.linkedin.com/in/parag-google/">LinkedIn</a>\n'
+    'Ex-Google | Founder SoftwareBrio.com'
+)
+
 # EXPANDED DELIVERABILITY ARMOR
 BANNED_WORDS = [
     "curious", "excited", "keen", "proposal", "outsource", "synergy",
@@ -42,34 +49,46 @@ config = types.GenerateContentConfig(
 # 2. PROMPT TEMPLATES
 # ==========================================
 INTRO_PROMPT = """
-Write a warm, expert-led outreach email from Parag (ex-Google, Founder of SoftwareBrio). 
+Write a warm, expert-led outreach email from Parag (ex-Google, Founder of SoftwareBrio).
 
 Structure:
-Subject:[2-4 words, Sentence case (ONLY the first letter capitalized, the rest lowercase), internal memo style. MUST extract a specific keyword from their Live Research or Company About. Examples: "Ai recruiting architecture", "Your forbes feature", or "Patient portal backend". Do NOT use a generic "Scaling [company]" template. Make it unique to them.]
-Body:[1 casual sentence opening. IF LIVE GOOGLE SEARCH shows a recent milestone, mention it. IF NOT, compliment their core product.][The Pivot: "At Google, I saw firsthand how scaling products like yours often leads to <b>[Specific Tech Headache 1]</b> and <b>[Specific Tech Headache 2]</b>. We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this."][The Ask: "Are you exploring external engineering bandwidth to accelerate your upcoming features?"][Closing: "Open to comparing notes next week?"]
+Subject:[2-4 words, Sentence case, internal memo style. MUST extract a specific keyword from their Live Research or Company About. Do NOT use a generic "Scaling [company]" template.]
+
+Body:
+[SENTENCE 1 — Opening: 1 casual sentence. IF Live Research shows a recent milestone, reference it. IF NOT, compliment a specific product feature by name.]
+
+[SENTENCE 2 — The Pivot: Start with "At Google, I saw firsthand how [NAME their specific type of platform, e.g. 'innovation portfolio tools', 'virtual try-on marketplaces', 'legal-tech member portals'] often hits <b>[Specific Tech Headache 1 tied to their actual product]</b> and <b>[Specific Tech Headache 2 tied to their actual product]</b>." Do NOT use "products like yours" — name the category.]
+
+[SENTENCE 3 — The Credential: One short sentence about SoftwareBrio that ties directly to the headaches just named. Do NOT use the generic "We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this." Instead, make it specific — e.g. "We built SoftwareBrio's team around exactly that layer of the stack." or "That's the exact problem our ex-FAANG engineers specialize in."]
+
+[SENTENCE 4 — The Ask: ONE sentence tied to THEIR specific product or a goal visible in the Live Research. Do NOT use the phrase "external engineering bandwidth" or "upcoming features" — those are generic. Instead reference their actual product, roadmap item, or challenge. E.g. "As [Company] pushes [specific feature], are you open to augmenting your dev team?"]
+
+[SENTENCE 5 — Closing: "Open to comparing notes next week?"]
 
 Constraints:
-* Under 75 words total.
-* FORMATTING: MUST start with 'Subject: ' followed by a new line for the body. Use double line breaks (\n\n) between every sentence in the body.
-* BOLDING: Use HTML <b> tags around the technical headaches. Do NOT bold anything else.
-* Tone: Founder-to-Founder. Casual, confident.
+* Under 67 words total for the body (subject excluded).
+* FORMATTING: MUST start with 'Subject: ' on its own line, then a blank line, then the body. Use double line breaks (\\n\\n) between every sentence.
+* BOLDING: HTML <b> tags ONLY around the two tech headaches. Nothing else.
+* Tone: Founder-to-Founder. Casual, confident, never salesy.
 * Do NOT use banned words.
+* Do NOT use the phrases "products like yours", "external engineering bandwidth", "upcoming features", or "solve exactly this" — these are banned as too generic.
 """
 
 FOLLOWUP_1_PROMPT = """
 Write a value-driven follow-up email.
 
 Structure:
-* Start: "Hi {first_name}, I was thinking more about[Mention a specific product feature or workflow from context]." 
-* Value Drop: Provide one 1-sentence insight identifying a common scaling trap related to that workflow, and state the modern technical solution our engineering team uses to solve it. Put <b>HTML bold tags</b> around the specific technical solution.
-* The Ask: "If expanding your tech bandwidth is on your radar, I'd love to share how our ex-FAANG team approaches this. Worth a 10-min chat?"
-* Sign-off: "Parag | Founder, SoftwareBrio.com"
+* Start: "Hi {{first_name}}, I was thinking more about [name one SPECIFIC product feature or workflow from their context — not a generic concept]."
+* Value Drop: One sentence: identify the exact scaling trap for THAT specific workflow, then name the modern technical solution. Put <b>HTML bold tags</b> around only the technical solution name.
+* The Ask: ONE sentence that ties directly to the solution you just mentioned and their specific product — reference the product name or workflow by name. Do NOT use the generic phrase "If expanding your tech bandwidth is on your radar, I'd love to share how our ex-FAANG team approaches this." Instead, make the ask feel like a natural next step specific to their situation. E.g. "Given how central [their specific feature] is to [Company], happy to walk you through exactly how we'd build this — worth a 10-min call?" or "If [Company] is planning to scale [specific feature] this quarter, I can share how we'd tackle it — worth a quick chat?"
+* Do NOT add any sign-off or signature line — it will be appended automatically.
 
 Constraints:
-* Under 60 words. No fluff. 
-* FORMATTING: Use double line breaks (\n\n) between every sentence.
-* BOLDING: Only bold the technical solution.
+* Under 54 words. No fluff.
+* FORMATTING: Use double line breaks (\\n\\n) between every sentence.
+* BOLDING: Only bold the technical solution name.
 * Do NOT invent or mention past clients.
+* Do NOT use the phrases "tech bandwidth", "ex-FAANG team approaches this", or "on your radar" — these are banned as too generic.
 * Do NOT use banned words.
 """
 
@@ -78,13 +97,15 @@ Write a final follow-up mail designed to force a reply (includes anti-ghosting).
 
 Structure:
 * Start: "Hi {first_name}, wrapping up my outreach here."
-* The Hook: Pitch ONE highly specific tech/AI feature idea for their platform. Put <b>HTML bold tags</b> around the specific feature name.
-* The Ask & Anti-Ghosting: "If you're ever looking for a reliable, ex-FAANG dev team to build features like that, keep us in mind. If you're completely locked in on dev bandwidth right now, totally fine—just let me know so I can close my file!"
-* End exactly with: "Best, Parag (Ex-Google)"
+* The Hook: Pitch ONE highly specific tech/AI feature idea for their platform — name the feature in <b>HTML bold tags</b>. The idea must be grounded in something real from the company context or live research (their product type, a specific gap, or a trend in their industry).
+* The Ask: ONE sentence that references building THAT specific feature for THEIR product — use the company or product name, not a generic "features like that". E.g. "If [Company] ever wants to build [feature name], our ex-FAANG team would love to tackle it — open to a quick intro?"
+* Anti-Ghosting close: End with exactly this sentence (do not change it): "If you're completely locked in on dev bandwidth right now, totally fine—just let me know so I can close my file!"
+* Do NOT add any sign-off or signature line — it will be appended automatically.
 
 Constraints:
-* Under 65 words.
+* Under 58 words.
 * FORMATTING: Use double line breaks (\n\n) between every sentence.
+* Do NOT use the phrase "If you're ever looking for a reliable, ex-FAANG dev team to build features like that, keep us in mind." — this is banned as too generic. The ask must name the company and feature specifically.
 * Do NOT use banned words.
 """
 
@@ -200,25 +221,32 @@ def generate_for_lead(lead_context, first_name, company):
     chat = client.chats.create(model="gemini-2.5-pro", config=config)
 
     raw_intro = generate_with_constraints(
-        chat, lead_context + "\n\n" + INTRO_PROMPT.format(company=company), max_words=75
+        chat, lead_context + "\n\n" + INTRO_PROMPT.format(company=company), max_words=67
     )
     subject, body = split_subject_and_body(raw_intro)
 
     if "ERROR:" not in raw_intro:
-        fu1_msg = generate_with_constraints(chat, FOLLOWUP_1_PROMPT.format(first_name=first_name), max_words=60)
+        fu1_msg = generate_with_constraints(chat, FOLLOWUP_1_PROMPT.format(first_name=first_name), max_words=54)
     else:
         fu1_msg = "Skipped due to Intro error"
 
     if "ERROR:" not in fu1_msg:
-        fu2_msg = generate_with_constraints(chat, FOLLOWUP_2_PROMPT.format(first_name=first_name), max_words=65)
+        fu2_msg = generate_with_constraints(chat, FOLLOWUP_2_PROMPT.format(first_name=first_name), max_words=58)
     else:
         fu2_msg = "Skipped due to Follow-up 1 error"
 
+    # Append the standard signature to every email body.
+    # Done here (not in the prompt) so it is always consistent and correctly formatted.
+    def _sign(text):
+        if not text or "ERROR:" in text or "Skipped due to" in text:
+            return text
+        return text + "\n\n" + SIGNATURE
+
     return {
         "Intro_Subject":        subject,
-        "Intro_Body":           body,
-        "Generated_Followup_1": fu1_msg,
-        "Generated_Followup_2": fu2_msg,
+        "Intro_Body":           _sign(body),
+        "Generated_Followup_1": _sign(fu1_msg),
+        "Generated_Followup_2": _sign(fu2_msg),
     }
 
 

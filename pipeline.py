@@ -19,7 +19,7 @@ from datetime import datetime
 # PIPELINE CONFIGURATION
 # ============================================================
 INPUT_CSV        = "Email - 3rd May - 27_4.csv"
-LEAD_LIMIT       = 20      # set None to process all rows
+LEAD_LIMIT       = 30      # set None to process all rows
 MAX_GEN_RETRIES  = 3       # retries per lead if validation fails
 RATE_LIMIT_SLEEP = 17      # seconds between leads (Gemini Free Tier: 15 RPM)
 
@@ -50,9 +50,9 @@ push = _load("apollo-push-v2.py", "apollo_push")  # Apollo sync
 FIELD_RULES = {
     #  field_key                  max_words  require_bold_tag
     "Intro_Subject":              (10,       False),
-    "Intro_Body":                 (75,       True),
-    "Generated_Followup_1":       (60,       True),
-    "Generated_Followup_2":       (65,       True),
+    "Intro_Body":                 (67,       True),
+    "Generated_Followup_1":       (54,       True),
+    "Generated_Followup_2":       (58,       True),
 }
 
 
