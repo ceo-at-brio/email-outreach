@@ -1,6 +1,5 @@
 import pandas as pd
 import requests
-import json
 import time
 import re
 import os
@@ -55,9 +54,21 @@ def has_unmapped_placeholders():
 def is_valid_email(email_str):
     if not email_str or pd.isna(email_str):
         return False
-    # Simple regex to check standard email format
     pattern = r'^[^@\s]+@[^@\s]+\.[^@\s]+$'
     return bool(re.match(pattern, str(email_str).strip()))
+
+
+# Sanitize a value from a pandas row: NaN and None become empty string.
+# Apollo returns HTTP 422 if NaN appears in the JSON body.
+def clean_val(v):
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip()
 
 
 # ==========================================
@@ -82,12 +93,18 @@ def get_active_email_account_id():
                 print("    Please connect an inbox under Apollo Settings > Channels > Email.")
                 return None
 
-            # If an override was requested, find it
+            # If an override was requested, find it — fail hard so the user
+            # knows immediately rather than sending from the wrong inbox.
             if SENDER_EMAIL_OVERRIDE:
                 for acct in active_accounts:
                     if acct.get("email") == SENDER_EMAIL_OVERRIDE:
                         print(f"[+] Found overridden sender inbox: {acct.get('email')} (ID: {acct.get('id')})")
                         return acct.get("id")
+                available = [a.get("email") for a in active_accounts]
+                print(f"[!] Error: SENDER_EMAIL_OVERRIDE '{SENDER_EMAIL_OVERRIDE}' was not found among active inboxes.")
+                print(f"    Active inboxes: {available}")
+                print(f"    Either correct the override or set SENDER_EMAIL_OVERRIDE = None to auto-select.")
+                return None
 
             # Default to the first active email account
             selected = active_accounts[0]
@@ -136,118 +153,152 @@ def run_custom_fields_diagnostic():
 # 5. CONTACT SYNC & SEQUENCE ENROLLMENT
 # ==========================================
 def find_existing_contact_by_email(email):
+    """
+    Returns the contact ID only if Apollo has a contact whose email field
+    exactly matches the supplied address.  The /contacts/search endpoint uses
+    a full-text keyword index, so results may include unrelated contacts whose
+    names or companies happen to contain similar text.  We filter the response
+    down to an exact email match to avoid patching the wrong record.
+    """
     url = f"{BASE_URL}/contacts/search"
-    payload = {"q_keywords": email}
+    payload = {"q_keywords": email, "per_page": 25}
+
+    def _search():
+        resp = requests.post(url, json=payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
+        if resp.status_code == 200:
+            for contact in resp.json().get("contacts", []):
+                # Check every email slot Apollo stores for this contact
+                contact_emails = [contact.get("email", "")] + [
+                    e.get("email", "") for e in contact.get("contact_emails", [])
+                ]
+                if email.lower() in [e.lower() for e in contact_emails if e]:
+                    return contact.get("id")
+        return None
 
     try:
-        response = requests.post(url, json=payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
-        if response.status_code == 200:
-            contacts = response.json().get("contacts", [])
-            if contacts:
-                return contacts[0].get("id")
+        return _search()
     except requests.exceptions.Timeout:
-        print(f"[!] Warning: Search request timed out for email {email}. Retrying once...")
+        print(f"[!] Warning: Search timed out for {email}. Retrying once...")
         time.sleep(2)
         try:
-            response = requests.post(url, json=payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
-            if response.status_code == 200:
-                contacts = response.json().get("contacts", [])
-                if contacts:
-                    return contacts[0].get("id")
+            return _search()
         except Exception:
             pass
     except Exception as e:
-        print(f"[!] Search error for email {email}: {str(e)}")
+        print(f"[!] Search error for {email}: {str(e)}")
     return None
 
 
 def sync_to_apollo(lead_data, email_account_id):
     raw_email = lead_data.get("Email ID")
 
-    # Pre-validate email format locally
     if not is_valid_email(raw_email):
         print(f"[-] Skipping lead: Invalid email format '{raw_email}'")
         return False
 
     email = str(raw_email).strip()
-    name = str(lead_data.get("Reviewer Name", "")).strip()
+    name = clean_val(lead_data.get("Reviewer Name"))
     first_name = name.split()[0] if name else "There"
     last_name = " ".join(name.split()[1:]) if name else ""
 
-    # FIXED: Replaced "custom_fields" with "typed_custom_fields" to resolve Issue 1
-    contact_payload = {
-        "email": email,
-        "first_name": first_name,
-        "last_name": last_name,
-        "organization_name": lead_data.get("Reviewer Company"),
-        "typed_custom_fields": {
-            CUSTOM_FIELD_MAPPING["ai_subject"]: lead_data.get("Intro_Subject"),
-            CUSTOM_FIELD_MAPPING["ai_intro_body"]: lead_data.get("Intro_Body"),
-            CUSTOM_FIELD_MAPPING["ai_followup_1"]: lead_data.get("Generated_Followup_1"),
-            CUSTOM_FIELD_MAPPING["ai_followup_2"]: lead_data.get("Generated_Followup_2")
-        }
+    # All values from pandas must be sanitized — empty cells arrive as float('nan')
+    # which produces invalid JSON and causes Apollo to return HTTP 422.
+    typed_custom_fields = {
+        CUSTOM_FIELD_MAPPING["ai_subject"]:    clean_val(lead_data.get("Intro_Subject")),
+        CUSTOM_FIELD_MAPPING["ai_intro_body"]: clean_val(lead_data.get("Intro_Body")),
+        CUSTOM_FIELD_MAPPING["ai_followup_1"]: clean_val(lead_data.get("Generated_Followup_1")),
+        CUSTOM_FIELD_MAPPING["ai_followup_2"]: clean_val(lead_data.get("Generated_Followup_2")),
     }
 
     contact_id = None
     existing_id = find_existing_contact_by_email(email)
 
     if existing_id:
-        print(f"[*] Contact {email} already exists (ID: {existing_id}). Updating fields...")
+        print(f"[*] Contact {email} already exists (ID: {existing_id}). Patching custom fields...")
+        # Only send fields we want to update — don't resend email or name to avoid collisions.
+        patch_payload = {
+            "first_name": first_name,
+            "last_name": last_name,
+            "organization_name": clean_val(lead_data.get("Reviewer Company")),
+            "typed_custom_fields": typed_custom_fields,
+        }
         update_url = f"{BASE_URL}/contacts/{existing_id}"
-        # Contact updates require PATCH according to documentation guidelines
-        update_response = requests.patch(update_url, json=contact_payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
+        update_response = requests.patch(update_url, json=patch_payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
 
         if update_response.status_code == 200:
             contact_id = existing_id
-            print(f"[+] Successfully updated existing contact.")
+            print(f"[+] Successfully patched existing contact.")
         else:
-            print(f"[-] Failed to update contact: {update_response.text}")
+            print(f"[-] Failed to patch contact {existing_id}: {update_response.status_code} — {update_response.text}")
     else:
         print(f"[*] Creating new contact for {email}...")
+        create_payload = {
+            "email": email,
+            "first_name": first_name,
+            "last_name": last_name,
+            "organization_name": clean_val(lead_data.get("Reviewer Company")),
+            "typed_custom_fields": typed_custom_fields,
+            # Prevent Apollo from silently creating a second record for the same address
+            "run_dedupe": True,
+        }
         create_url = f"{BASE_URL}/contacts"
-        create_response = requests.post(create_url, json=contact_payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
+        create_response = requests.post(create_url, json=create_payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
 
         if create_response.status_code == 200:
             contact_id = create_response.json().get("contact", {}).get("id")
             print(f"[+] Successfully created new contact (ID: {contact_id}).")
         else:
-            print(f"[-] Failed to create contact: {create_response.text}")
+            print(f"[-] Failed to create contact: {create_response.status_code} — {create_response.text}")
+
+    if not contact_id:
+        return False
 
     # Enroll the contact into the sequence
-    if contact_id:
-        # Endpoint matching schema definition
-        sequence_url = f"{BASE_URL}/emailer_campaigns/{SEQUENCE_ID}/add_contact_ids"
+    sequence_url = f"{BASE_URL}/emailer_campaigns/{SEQUENCE_ID}/add_contact_ids"
+    sequence_payload = {
+        "contact_ids": [contact_id],
+        "emailer_campaign_id": SEQUENCE_ID,
+        "send_email_from_email_account_id": email_account_id,
+        "async": False,
+    }
+    query_params = {
+        "sequence_unverified_email": "true",
+        "sequence_active_in_other_campaigns": "true",
+        "sequence_finished_in_other_campaigns": "true",
+    }
 
-        # REQUIRED query/body payloads
-        sequence_payload = {
-            "contact_ids": [contact_id],
-            "emailer_campaign_id": SEQUENCE_ID,
-            "send_email_from_email_account_id": email_account_id,
-            "async": False
-        }
+    seq_response = requests.post(
+        sequence_url,
+        json=sequence_payload,
+        params=query_params,
+        headers=HEADERS,
+        timeout=TIMEOUT_LIMIT,
+    )
 
-        # ADDED Query parameters from OpenAPI definition to bypass deliverability/sequence constraints
-        query_params = {
-            "sequence_unverified_email": "true",  # Force add unverified emails
-            "sequence_active_in_other_campaigns": "true",  # Bypass other active sequence locks
-            "sequence_finished_in_other_campaigns": "true"  # Bypass finished sequence locks
-        }
+    if seq_response.status_code == 200:
+        body = seq_response.json()
+        enrolled = body.get("contact_ids", [])
+        skipped = body.get("skipped_contact_ids", [])
 
-        seq_response = requests.post(
-            sequence_url,
-            json=sequence_payload,
-            params=query_params,  # Pass query overrides
-            headers=HEADERS,
-            timeout=TIMEOUT_LIMIT
-        )
-
-        if seq_response.status_code == 200:
-            print(f"[+] Enrolled contact {contact_id} in Sequence {SEQUENCE_ID}.")
+        if contact_id in skipped:
+            reason = next(
+                (s.get("reason", "unknown") for s in body.get("skipped_contacts", [])
+                 if s.get("id") == contact_id),
+                "unknown"
+            )
+            print(f"[~] Contact {contact_id} was skipped by Apollo: {reason}")
+            # Custom fields were still patched above, so this is non-fatal.
             return True
-        else:
-            print(f"[-] Enrollment failed: {seq_response.text}")
 
-    return False
+        if contact_id in enrolled or enrolled:
+            print(f"[+] Enrolled contact {contact_id} in sequence {SEQUENCE_ID}.")
+            return True
+
+        print(f"[~] Enrollment response did not confirm contact {contact_id}: {body}")
+        return True  # 200 response — treat as success
+    else:
+        print(f"[-] Sequence enrollment failed: {seq_response.status_code} — {seq_response.text}")
+        return False
 
 
 # ==========================================
