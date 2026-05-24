@@ -11,7 +11,7 @@ from google.genai.errors import APIError
 # ==========================================
 # 1. CONFIGURATION & SETUP
 # ==========================================
-API_KEY = "AIzaSyB5qqAgwZt9VtiW0L9pIt_nG9ZOolTE7mg"
+API_KEY = "AIzaSyBIEGzk2a3Xxd45N2dbmx7UvIT3obilh-k"
 client = genai.Client(api_key=API_KEY)
 
 INPUT_CSV = "Email - 3rd May - 27_4.csv"
@@ -25,7 +25,7 @@ BANNED_WORDS = [
     "game-changer", "delve", "unlock"
 ]
 
-# ADDED ROLE-BASED JARGON LOGIC
+# ROLE-BASED JARGON LOGIC
 SYSTEM_INSTRUCTION = """
 You are Parag, Founder of SoftwareBrio. You write highly engaging, ultra-concise, and classy cold emails. 
 Rule 1: NEVER output markdown code blocks (like ```text).
@@ -45,14 +45,15 @@ INTRO_PROMPT = """
 Write a warm, expert-led outreach email from Parag (ex-Google, Founder of SoftwareBrio). 
 
 Structure:
-Subject:[2-4 words, lowercase, internal memo style (e.g., "scaling {company}")]
+Subject:[2-4 words, Sentence case (ONLY the first letter capitalized, the rest lowercase), internal memo style. MUST extract a specific keyword from their Live Research or Company About. Examples: "Ai recruiting architecture", "Your forbes feature", or "Patient portal backend". Do NOT use a generic "Scaling [company]" template. Make it unique to them.]
 Body:[1 casual sentence opening. IF LIVE GOOGLE SEARCH shows a recent milestone, mention it. IF NOT, compliment their core product.][The Pivot: "At Google, I saw firsthand how scaling products like yours often leads to <b>[Specific Tech Headache 1]</b> and <b>[Specific Tech Headache 2]</b>. We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this."][The Ask: "Are you exploring external engineering bandwidth to accelerate your upcoming features?"][Closing: "Open to comparing notes next week?"]
 
 Constraints:
 * Under 75 words total.
-* FORMATTING: MUST start with 'Subject: ' followed by a new line for the body. Use double line breaks (\n\n) between every sentence.
+* FORMATTING: MUST start with 'Subject: ' followed by a new line for the body. Use double line breaks (\n\n) between every sentence in the body.
 * BOLDING: Use HTML <b> tags around the technical headaches. Do NOT bold anything else.
 * Tone: Founder-to-Founder. Casual, confident.
+* Do NOT use banned words.
 """
 
 FOLLOWUP_1_PROMPT = """
@@ -69,6 +70,7 @@ Constraints:
 * FORMATTING: Use double line breaks (\n\n) between every sentence.
 * BOLDING: Only bold the technical solution.
 * Do NOT invent or mention past clients.
+* Do NOT use banned words.
 """
 
 FOLLOWUP_2_PROMPT = """
@@ -83,21 +85,8 @@ Structure:
 Constraints:
 * Under 65 words.
 * FORMATTING: Use double line breaks (\n\n) between every sentence.
+* Do NOT use banned words.
 """
-
-# NEW: LINKEDIN DM PROMPT
-LINKEDIN_DM_PROMPT = """
-Write a highly-customized LinkedIn connection request note from Parag to the prospect.
-
-Structure:
-"Hi {first_name}, saw the recent [Insert specific milestone or feature from LIVE GOOGLE SEARCH or Company About]. As an ex-Google founder running a dev agency, I love the architecture you’re building. Would love to connect! - Parag"
-
-Constraints:
-* MUST be strictly under 250 characters (LinkedIn limit).
-* Output ONLY the note. No subject lines, no markdown.
-* Tone: Casual, professional peer.
-"""
-
 
 # ==========================================
 # 3. HELPER FUNCTIONS
@@ -107,11 +96,9 @@ def clean_text(text):
         return ""
     return text.replace("```text", "").replace("```json", "").replace("```html", "").replace("```", "").strip()
 
-
 def contains_banned_words(text):
     text_lower = text.lower()
     return any(word in text_lower for word in BANNED_WORDS)
-
 
 def research_lead_with_google(name, company, linkedin_url, retries=3):
     """Uses Gemini's native Google Search grounding with LinkedIn URL verification."""
@@ -153,7 +140,6 @@ def research_lead_with_google(name, company, linkedin_url, retries=3):
             return f"(Live research failed: {str(e)})"
     return "(No recent live data found - Max retries hit)"
 
-
 def send_message_with_retry(chat_session, prompt, retries=3):
     delay = 5
     for attempt in range(retries):
@@ -172,7 +158,6 @@ def send_message_with_retry(chat_session, prompt, retries=3):
         except Exception as e:
             return f"ERROR: {str(e)}"
     return "ERROR: Max retries exceeded."
-
 
 def generate_with_constraints(chat_session, prompt, max_words, retries=3):
     raw_text = send_message_with_retry(chat_session, prompt)
@@ -197,7 +182,6 @@ def generate_with_constraints(chat_session, prompt, max_words, retries=3):
 
     return email_text
 
-
 def split_subject_and_body(email_text):
     if "ERROR:" in email_text:
         return "ERROR", email_text
@@ -205,7 +189,6 @@ def split_subject_and_body(email_text):
     if match:
         return match.group(1).strip(), match.group(2).strip()
     return "quick question", email_text.strip()
-
 
 # ==========================================
 # 4. MAIN EXECUTION
@@ -226,7 +209,6 @@ def main():
     df_filtered['Intro_Body'] = ""
     df_filtered['Generated_Followup_1'] = ""
     df_filtered['Generated_Followup_2'] = ""
-    df_filtered['Generated_LinkedIn_DM'] = ""  # NEW COLUMN
     df_filtered['Live_Research_Data'] = ""
 
     for i, (index, row) in enumerate(df_filtered.iterrows(), start=1):
@@ -271,14 +253,6 @@ def main():
             fu2_msg = "Skipped due to Follow-up 1 error"
         df_filtered.at[index, 'Generated_Followup_2'] = fu2_msg
 
-        # 4. LinkedIn DM (NEW)
-        if "ERROR:" not in raw_intro:
-            linkedin_msg = generate_with_constraints(chat, LINKEDIN_DM_PROMPT.format(first_name=first_name),
-                                                     max_words=45)  # 45 words is safely under 300 chars
-        else:
-            linkedin_msg = "Skipped due to Intro error"
-        df_filtered.at[index, 'Generated_LinkedIn_DM'] = linkedin_msg
-
         # --- LIVE JSON CONSOLE PRINTING ---
         output_json = {
             "Lead": f"{first_name} at {company}",
@@ -287,17 +261,16 @@ def main():
                 "Subject": subject,
                 "Intro_Body": body,
                 "Follow-up_1": fu1_msg,
-                "Follow-up_2": fu2_msg,
-                "LinkedIn_DM": linkedin_msg
+                "Follow-up_2": fu2_msg
             }
         }
         print(json.dumps(output_json, indent=4, ensure_ascii=False))
         # ----------------------------------
 
-        # Sleep 21 seconds to safely handle 5 API calls per lead on Free Tier (15 RPM limit)
+        # Sleep 17 seconds to safely handle 4 API calls per lead on Free Tier (15 RPM limit)
         if i < len(df_filtered):
-            print(f"Waiting 21 seconds for rate limits...")
-            time.sleep(21)
+            print(f"Waiting 17 seconds for rate limits...")
+            time.sleep(17)
 
     df_filtered.to_csv(OUTPUT_CSV, index=False)
     print(f"\n✅ Done! Generated POC emails saved to {OUTPUT_CSV}")
