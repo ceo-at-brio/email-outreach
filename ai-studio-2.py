@@ -190,6 +190,38 @@ def split_subject_and_body(email_text):
         return match.group(1).strip(), match.group(2).strip()
     return "quick question", email_text.strip()
 
+
+def generate_for_lead(lead_context, first_name, company):
+    """
+    Generate all 3 emails for a single lead using a shared chat session.
+    Returns a dict with keys: Intro_Subject, Intro_Body, Generated_Followup_1, Generated_Followup_2.
+    Callable as a module function from the pipeline without running main().
+    """
+    chat = client.chats.create(model="gemini-2.5-pro", config=config)
+
+    raw_intro = generate_with_constraints(
+        chat, lead_context + "\n\n" + INTRO_PROMPT.format(company=company), max_words=75
+    )
+    subject, body = split_subject_and_body(raw_intro)
+
+    if "ERROR:" not in raw_intro:
+        fu1_msg = generate_with_constraints(chat, FOLLOWUP_1_PROMPT.format(first_name=first_name), max_words=60)
+    else:
+        fu1_msg = "Skipped due to Intro error"
+
+    if "ERROR:" not in fu1_msg:
+        fu2_msg = generate_with_constraints(chat, FOLLOWUP_2_PROMPT.format(first_name=first_name), max_words=65)
+    else:
+        fu2_msg = "Skipped due to Follow-up 1 error"
+
+    return {
+        "Intro_Subject":        subject,
+        "Intro_Body":           body,
+        "Generated_Followup_1": fu1_msg,
+        "Generated_Followup_2": fu2_msg,
+    }
+
+
 # ==========================================
 # 4. MAIN EXECUTION
 # ==========================================
@@ -228,43 +260,30 @@ def main():
         live_research = research_lead_with_google(name, company, linkedin_url)
         df_filtered.at[index, 'Live_Research_Data'] = live_research
 
-        lead_context = f"CONTEXT FOR THIS LEAD:\nName: {name}\nLinkedIn: {linkedin_url}\nCompany: {company}\nPast Msg: {reachout}\nProject Review: {review}\nCompany About: {about}\n\nLIVE GOOGLE SEARCH RESEARCH:\n{live_research}"
+        lead_context = (
+            f"CONTEXT FOR THIS LEAD:\nName: {name}\nLinkedIn: {linkedin_url}\nCompany: {company}\n"
+            f"Past Msg: {reachout}\nProject Review: {review}\nCompany About: {about}\n\n"
+            f"LIVE GOOGLE SEARCH RESEARCH:\n{live_research}"
+        )
 
-        chat = client.chats.create(model="gemini-2.5-pro", config=config)
+        generated = generate_for_lead(lead_context, first_name, company)
 
-        # 1. Intro Email
-        raw_intro = generate_with_constraints(chat, lead_context + "\n\n" + INTRO_PROMPT.format(company=company),
-                                              max_words=75)
-        subject, body = split_subject_and_body(raw_intro)
-        df_filtered.at[index, 'Intro_Subject'] = subject
-        df_filtered.at[index, 'Intro_Body'] = body
-
-        # 2. Follow-up 1
-        if "ERROR:" not in raw_intro:
-            fu1_msg = generate_with_constraints(chat, FOLLOWUP_1_PROMPT.format(first_name=first_name), max_words=60)
-        else:
-            fu1_msg = "Skipped due to Intro error"
-        df_filtered.at[index, 'Generated_Followup_1'] = fu1_msg
-
-        # 3. Follow-up 2
-        if "ERROR:" not in fu1_msg:
-            fu2_msg = generate_with_constraints(chat, FOLLOWUP_2_PROMPT.format(first_name=first_name), max_words=65)
-        else:
-            fu2_msg = "Skipped due to Follow-up 1 error"
-        df_filtered.at[index, 'Generated_Followup_2'] = fu2_msg
+        df_filtered.at[index, 'Intro_Subject']        = generated['Intro_Subject']
+        df_filtered.at[index, 'Intro_Body']           = generated['Intro_Body']
+        df_filtered.at[index, 'Generated_Followup_1'] = generated['Generated_Followup_1']
+        df_filtered.at[index, 'Generated_Followup_2'] = generated['Generated_Followup_2']
 
         # --- LIVE JSON CONSOLE PRINTING ---
-        output_json = {
+        print(json.dumps({
             "Lead": f"{first_name} at {company}",
             "Live_Research_Found": live_research,
             "Messages": {
-                "Subject": subject,
-                "Intro_Body": body,
-                "Follow-up_1": fu1_msg,
-                "Follow-up_2": fu2_msg
+                "Subject":    generated['Intro_Subject'],
+                "Intro_Body": generated['Intro_Body'],
+                "Follow-up_1": generated['Generated_Followup_1'],
+                "Follow-up_2": generated['Generated_Followup_2'],
             }
-        }
-        print(json.dumps(output_json, indent=4, ensure_ascii=False))
+        }, indent=4, ensure_ascii=False))
         # ----------------------------------
 
         # Sleep 17 seconds to safely handle 4 API calls per lead on Free Tier (15 RPM limit)

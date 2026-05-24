@@ -1,5 +1,6 @@
 import pandas as pd
 import requests
+import json
 import time
 import re
 import os
@@ -214,41 +215,67 @@ def sync_to_apollo(lead_data, email_account_id):
     existing_id = find_existing_contact_by_email(email)
 
     if existing_id:
-        print(f"[*] Contact {email} already exists (ID: {existing_id}). Patching custom fields...")
-        # Only send fields we want to update — don't resend email or name to avoid collisions.
         patch_payload = {
             "first_name": first_name,
             "last_name": last_name,
             "organization_name": clean_val(lead_data.get("Reviewer Company")),
             "typed_custom_fields": typed_custom_fields,
         }
+        print(f"\n  ── PATCH /contacts/{existing_id} ──")
+        print(f"  Request:\n{json.dumps(patch_payload, indent=4, ensure_ascii=False)}")
+
         update_url = f"{BASE_URL}/contacts/{existing_id}"
         update_response = requests.patch(update_url, json=patch_payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
+
+        print(f"  Response [{update_response.status_code}]:")
+        try:
+            c = update_response.json().get("contact", {})
+            print(json.dumps({
+                "id": c.get("id"), "email": c.get("email"), "name": c.get("name"),
+                "typed_custom_fields": c.get("typed_custom_fields"),
+                "emailer_campaign_ids": c.get("emailer_campaign_ids"),
+                "updated_at": c.get("updated_at"),
+            }, indent=4, ensure_ascii=False))
+        except Exception:
+            print(update_response.text[:500])
 
         if update_response.status_code == 200:
             contact_id = existing_id
             print(f"[+] Successfully patched existing contact.")
         else:
-            print(f"[-] Failed to patch contact {existing_id}: {update_response.status_code} — {update_response.text}")
+            print(f"[-] Failed to patch contact {existing_id}.")
     else:
-        print(f"[*] Creating new contact for {email}...")
         create_payload = {
             "email": email,
             "first_name": first_name,
             "last_name": last_name,
             "organization_name": clean_val(lead_data.get("Reviewer Company")),
             "typed_custom_fields": typed_custom_fields,
-            # Prevent Apollo from silently creating a second record for the same address
             "run_dedupe": True,
         }
+        print(f"\n  ── POST /contacts ──")
+        print(f"  Request:\n{json.dumps(create_payload, indent=4, ensure_ascii=False)}")
+
         create_url = f"{BASE_URL}/contacts"
         create_response = requests.post(create_url, json=create_payload, headers=HEADERS, timeout=TIMEOUT_LIMIT)
+
+        print(f"  Response [{create_response.status_code}]:")
+        try:
+            c = create_response.json().get("contact", {})
+            print(json.dumps({
+                "id": c.get("id"), "email": c.get("email"), "name": c.get("name"),
+                "typed_custom_fields": c.get("typed_custom_fields"),
+                "emailer_campaign_ids": c.get("emailer_campaign_ids"),
+                "created_at": c.get("created_at"),
+            }, indent=4, ensure_ascii=False))
+        except Exception:
+            print(create_response.text[:500])
 
         if create_response.status_code == 200:
             contact_id = create_response.json().get("contact", {}).get("id")
             print(f"[+] Successfully created new contact (ID: {contact_id}).")
         else:
-            print(f"[-] Failed to create contact: {create_response.status_code} — {create_response.text}")
+            print(f"[-] Failed to create contact.")
 
     if not contact_id:
         return False
@@ -267,6 +294,9 @@ def sync_to_apollo(lead_data, email_account_id):
         "sequence_finished_in_other_campaigns": "true",
     }
 
+    print(f"\n  ── POST /emailer_campaigns/{SEQUENCE_ID}/add_contact_ids ──")
+    print(f"  Request:\n{json.dumps({'body': sequence_payload, 'params': query_params}, indent=4, ensure_ascii=False)}")
+
     seq_response = requests.post(
         sequence_url,
         json=sequence_payload,
@@ -274,6 +304,24 @@ def sync_to_apollo(lead_data, email_account_id):
         headers=HEADERS,
         timeout=TIMEOUT_LIMIT,
     )
+
+    print(f"  Response [{seq_response.status_code}]:")
+    try:
+        sr = seq_response.json()
+        print(json.dumps({
+            "contact_ids":         sr.get("contact_ids"),
+            "skipped_contact_ids": sr.get("skipped_contact_ids"),
+            "skipped_contacts":    sr.get("skipped_contacts"),
+            "emailer_campaign": {
+                "id":               sr.get("emailer_campaign", {}).get("id"),
+                "name":             sr.get("emailer_campaign", {}).get("name"),
+                "unique_scheduled": sr.get("emailer_campaign", {}).get("unique_scheduled"),
+                "unique_delivered": sr.get("emailer_campaign", {}).get("unique_delivered"),
+                "status_reason":    sr.get("emailer_campaign", {}).get("status_reason"),
+            },
+        }, indent=4, ensure_ascii=False))
+    except Exception:
+        print(seq_response.text[:500])
 
     if seq_response.status_code == 200:
         body = seq_response.json()
@@ -287,17 +335,16 @@ def sync_to_apollo(lead_data, email_account_id):
                 "unknown"
             )
             print(f"[~] Contact {contact_id} was skipped by Apollo: {reason}")
-            # Custom fields were still patched above, so this is non-fatal.
             return True
 
         if contact_id in enrolled or enrolled:
             print(f"[+] Enrolled contact {contact_id} in sequence {SEQUENCE_ID}.")
             return True
 
-        print(f"[~] Enrollment response did not confirm contact {contact_id}: {body}")
-        return True  # 200 response — treat as success
+        print(f"[~] Enrollment response 200 but contact not confirmed — treating as success.")
+        return True
     else:
-        print(f"[-] Sequence enrollment failed: {seq_response.status_code} — {seq_response.text}")
+        print(f"[-] Sequence enrollment failed: {seq_response.status_code}")
         return False
 
 
