@@ -7,13 +7,12 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
+import config
 
 # ==========================================
 # 1. CONFIGURATION & SETUP
 # ==========================================
-API_KEY = "AIzaSyB5qqAgwZt9VtiW0L9pIt_nG9ZOolTE7mg"
-
-client = genai.Client(api_key=API_KEY)
+client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 INPUT_CSV = "Email - 3rd May - 27_4.csv"
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

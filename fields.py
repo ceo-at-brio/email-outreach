@@ -1,6 +1,7 @@
 import requests
+import config
 
-APOLLO_API_KEY = "qHZgYECHVdxOrg4bb69-oQ"
+APOLLO_API_KEY = config.APOLLO_API_KEY
 
 
 def fetch_custom_fields():

@@ -6,6 +6,7 @@ Step 2  Validate every field     (pipeline-only logic; retry generation up to MA
 Step 3  Push to Apollo           (apollo-push-v2.py → sync_to_apollo, get_active_email_account_id)
 
 Leads that fail all retries are saved to *_FAILED.csv and skipped from Apollo.
+All output is mirrored to a .log file with timestamps so nothing is lost after terminal scroll.
 """
 
 import importlib.util
@@ -13,19 +14,45 @@ import pandas as pd
 import json
 import time
 import os
+import sys
 from datetime import datetime
 
 # ============================================================
 # PIPELINE CONFIGURATION
 # ============================================================
 INPUT_CSV        = "Email - 3rd May - 27_4.csv"
-LEAD_LIMIT       = 30      # set None to process all rows
+LEAD_LIMIT       = None                 # set None to process all rows
 MAX_GEN_RETRIES  = 3       # retries per lead if validation fails
-RATE_LIMIT_SLEEP = 17      # seconds between leads (Gemini Free Tier: 15 RPM)
+RATE_LIMIT_SLEEP = 30      # seconds between leads — gives the 5 RPM (Gemini 2.5 Pro free) more breathing room
 
 timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_CSV = f"Generated_Emails_POC_Output_{timestamp}.csv"
 FAILED_CSV = f"Generated_Emails_FAILED_{timestamp}.csv"
+LOG_FILE   = f"pipeline_run_{timestamp}.log"
+
+
+# ============================================================
+# LOGGING — mirrors all print() output to a .log file so
+# nothing is lost after terminal scroll or crash.
+# ============================================================
+class _Tee:
+    """Write to both stdout and a log file simultaneously."""
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+
+def _ts():
+    """Return current time as [HH:MM:SS] prefix for log lines."""
+    return datetime.now().strftime("[%H:%M:%S]")
 
 # ============================================================
 # LOAD ai-studio-2.py AND apollo-push-v2.py AS MODULES
@@ -48,44 +75,81 @@ push = _load("apollo-push-v2.py", "apollo_push")  # Apollo sync
 # Checks every generated field before allowing it to be pushed.
 # ============================================================
 FIELD_RULES = {
-    #  field_key                  max_words  require_bold_tag
-    "Intro_Subject":              (10,       False),
-    "Intro_Body":                 (67,       True),
-    "Generated_Followup_1":       (54,       True),
-    "Generated_Followup_2":       (58,       True),
+    # max_chars = the target written into the prompts (informational only).
+    # Char count is NO LONGER a validation failure — only banned words,
+    # missing <b> tags, empty values, and API errors cause retries.
+    #  field_key                  max_chars  require_bold_tag
+    "Intro_Subject":              (65,       False),
+    "Intro_Body":                 (420,      True),
+    "Generated_Followup_1":       (340,      True),
+    "Generated_Followup_2":       (370,      True),
 }
 
 
-def validate_lead_emails(row):
+
+def validate_lead_emails(row, print_counts=False):
     """
     Returns (passed: bool, issues: list[str]).
     Checks every required field for: non-empty, no ERROR marker,
-    word count within limit, no banned words, required <b> tag present.
+    char count within limit, no banned words, required <b> tag present.
+
+    Char count is measured on the email body ONLY — the signature appended
+    by generate_for_lead() is stripped before counting so it doesn't eat
+    into the email's character budget.
+
+    When print_counts=True prints a per-field char-count table so you can
+    see how close each field is to the limit.
     """
     issues = []
-    for field, (max_words, require_bold) in FIELD_RULES.items():
+    sig_suffix = "\n\n" + gen.SIGNATURE  # signature appended programmatically
+    counts = []
+
+    for field, (max_chars, require_bold) in FIELD_RULES.items():
         value = str(row.get(field, "")).strip()
 
         if not value:
             issues.append(f"{field}: EMPTY")
+            counts.append((field, 0, max_chars, "EMPTY"))
             continue
         if "ERROR:" in value:
             issues.append(f"{field}: generation error — {value[:80]}")
+            counts.append((field, 0, max_chars, "ERROR"))
             continue
         if "Skipped due to" in value:
             issues.append(f"{field}: skipped due to upstream error")
+            counts.append((field, 0, max_chars, "SKIPPED"))
             continue
 
-        word_count = len(value.split())
-        if word_count > max_words:
-            issues.append(f"{field}: too long ({word_count}/{max_words} words)")
+        # Strip signature before char count — it's ~50 chars that Gemini
+        # never wrote and should not count against the limit.
+        body_only = value.replace(sig_suffix, "").strip()
 
-        if gen.contains_banned_words(value):
-            found = [w for w in gen.BANNED_WORDS if w in value.lower()]
-            issues.append(f"{field}: banned word(s) {found}")
+        char_count = len(body_only)
+        counts.append((field, char_count, max_chars, "ok"))
+
+        if gen.contains_banned_words(body_only):
+            found = [w for w in gen.BANNED_WORDS if w in body_only.lower()]
+            issues.append(
+                f"{field}: banned word(s) {found} — "
+                f"content: «{body_only[:120]}{'…' if len(body_only) > 120 else ''}»"
+            )
 
         if require_bold and "<b>" not in value:
-            issues.append(f"{field}: missing required <b> HTML tag")
+            issues.append(
+                f"{field}: missing required <b> HTML tag — "
+                f"content: «{body_only[:120]}{'…' if len(body_only) > 120 else ''}»"
+            )
+
+    if print_counts:
+        print(f"  {'Field':<28} {'Chars':>6} {'Target':>7}")
+        print(f"  {'─'*28} {'─'*6} {'─'*7}")
+        for field, cc, lim, status in counts:
+            if status in ("EMPTY", "ERROR", "SKIPPED"):
+                print(f"  {field:<28} {'—':>6} {lim:>7}  ⚠ {status}")
+            else:
+                margin = lim - cc
+                bar = "✅" if margin >= 0 else "~"
+                print(f"  {field:<28} {cc:>6} {lim:>7} {f'+{margin}' if margin >= 0 else str(margin):>8}  {bar}")
 
     return (len(issues) == 0), issues
 
@@ -94,13 +158,20 @@ def validate_lead_emails(row):
 # MAIN PIPELINE
 # ============================================================
 def main():
+    # Mirror all stdout to a persistent log file for this run
+    _log_handle = open(LOG_FILE, "w", encoding="utf-8")
+    sys.stdout = _Tee(sys.__stdout__, _log_handle)
+
     print("=" * 65)
-    print("  OUTREACH PIPELINE")
+    print(f"  OUTREACH PIPELINE   run={timestamp}")
     print("  Step 1: Generate  →  Step 2: Validate  →  Step 3: Push")
+    print(f"  Log file: {LOG_FILE}")
     print("=" * 65)
 
     if not os.path.exists(INPUT_CSV):
         print(f"[!] Input CSV not found: {INPUT_CSV}")
+        sys.stdout = sys.__stdout__
+        _log_handle.close()
         return
 
     df = pd.read_csv(INPUT_CSV)
@@ -108,7 +179,7 @@ def main():
     if LEAD_LIMIT:
         df_filtered = df_filtered.head(LEAD_LIMIT)
     total = len(df_filtered)
-    print(f"\n[*] Loaded {total} leads from '{INPUT_CSV}'\n")
+    print(f"\n{_ts()} [*] Loaded {total} leads from '{INPUT_CSV}'\n")
 
     for col in ["Intro_Subject", "Intro_Body", "Generated_Followup_1", "Generated_Followup_2", "Live_Research_Data"]:
         df_filtered[col] = ""
@@ -129,11 +200,11 @@ def main():
         email      = str(row.get("Email ID", "")).strip()
 
         print(f"\n{'─'*65}")
-        print(f"  Lead {i}/{total}: {first_name} at {company} <{email}>")
+        print(f"  {_ts()} Lead {i}/{total}: {first_name} at {company} <{email}>")
         print(f"{'─'*65}")
 
         # Research (ai-studio-2.py)
-        print(f"  [*] Researching via Google Search...")
+        print(f"  {_ts()} [*] Researching via Google Search...")
         live_research = gen.research_lead_with_google(name, company, linkedin)
         df_filtered.at[index, "Live_Research_Data"] = live_research
 
@@ -146,23 +217,37 @@ def main():
 
         best_result = None
         best_issues = None
+        quota_exhausted = False  # set True when all fields come back as ERRORs
 
         for attempt in range(1, MAX_GEN_RETRIES + 1):
-            print(f"  [*] Generating emails (attempt {attempt}/{MAX_GEN_RETRIES})...")
+            print(f"  {_ts()} [*] Generating emails (attempt {attempt}/{MAX_GEN_RETRIES})...")
 
             # Generate (ai-studio-2.py)
             generated = gen.generate_for_lead(lead_context, first_name, company)
 
+            # Detect sustained quota exhaustion: if EVERY generated field is an
+            # error (not a validation miss), the API is completely unavailable.
+            # Retrying immediately wastes quota — pause before the next attempt.
+            all_errors = all(
+                str(generated.get(f, "")).startswith("ERROR:")
+                or str(generated.get(f, "")).startswith("Skipped")
+                for f in ["Intro_Subject", "Intro_Body", "Generated_Followup_1", "Generated_Followup_2"]
+            )
+            if all_errors and attempt < MAX_GEN_RETRIES:
+                quota_exhausted = True
+                print(f"  {_ts()} [!] All fields returned errors — likely quota exhausted. Waiting 120s before retry...")
+                time.sleep(120)
+
             candidate = {**row.to_dict(), **generated}
-            passed, issues = validate_lead_emails(candidate)
+            passed, issues = validate_lead_emails(candidate, print_counts=True)
 
             if passed:
                 best_result = generated
                 best_issues = []
-                print(f"  [+] Validation PASSED.")
+                print(f"  {_ts()} [+] Validation PASSED (attempt {attempt}).")
                 break
             else:
-                print(f"  [!] Validation FAILED (attempt {attempt}):")
+                print(f"  {_ts()} [!] Validation FAILED (attempt {attempt}/{MAX_GEN_RETRIES}):")
                 for issue in issues:
                     print(f"       • {issue}")
                 if best_issues is None or len(issues) < len(best_issues):
@@ -192,12 +277,13 @@ def main():
             validated_rows.append(row_out)
             validation_log.append({"email": email, "status": "PASS", "issues": []})
         else:
+            row_out["Failure_Reasons"] = " | ".join(best_issues)
             failed_rows.append(row_out)
             validation_log.append({"email": email, "status": "FAIL", "issues": best_issues})
-            print(f"  [✗] Lead failed after {MAX_GEN_RETRIES} attempt(s) — will NOT be pushed to Apollo.")
+            print(f"  {_ts()} [✗] Lead failed after {MAX_GEN_RETRIES} attempt(s) — will NOT be pushed to Apollo.")
 
         if i < total:
-            print(f"\n  Waiting {RATE_LIMIT_SLEEP}s for rate limits...")
+            print(f"\n  {_ts()} Waiting {RATE_LIMIT_SLEEP}s for rate limits...")
             time.sleep(RATE_LIMIT_SLEEP)
 
     # Save CSVs
@@ -210,17 +296,21 @@ def main():
 
     # ── STEP 3: Apollo push for validated leads only ──────────────
     print(f"\n{'='*65}")
-    print(f"  STEP 3: Pushing {len(validated_rows)} validated lead(s) to Apollo")
+    print(f"  {_ts()} STEP 3: Pushing {len(validated_rows)} validated lead(s) to Apollo")
     print(f"{'='*65}\n")
 
     if not validated_rows:
         print("[!] No validated leads to push.")
+        sys.stdout = sys.__stdout__
+        _log_handle.close()
         return
 
     # get_active_email_account_id (apollo-push-v2.py)
     email_account_id = push.get_active_email_account_id()
     if not email_account_id:
         print("[!] Could not resolve sender inbox. Aborting Apollo push.")
+        sys.stdout = sys.__stdout__
+        _log_handle.close()
         return
 
     push_success = 0
@@ -229,7 +319,7 @@ def main():
     for i, lead in enumerate(validated_rows, start=1):
         email = lead.get("Email ID", "")
         print(f"\n{'─'*65}")
-        print(f"  Pushing ({i}/{len(validated_rows)}): {email}")
+        print(f"  {_ts()} Pushing ({i}/{len(validated_rows)}): {email}")
         print(f"{'─'*65}")
 
         # sync_to_apollo (apollo-push-v2.py) — prints full JSON debug internally
@@ -243,7 +333,7 @@ def main():
 
     # ── FINAL REPORT ──────────────────────────────────────────────
     print(f"\n{'='*65}")
-    print(f"  PIPELINE COMPLETE")
+    print(f"  PIPELINE COMPLETE   {_ts()}")
     print(f"{'='*65}")
     print(f"  Total leads processed : {total}")
     print(f"  Generation passed     : {len(validated_rows)}")
@@ -252,17 +342,23 @@ def main():
     print(f"  Apollo push failed    : {push_failed}")
 
     if failed_rows:
-        print(f"\n  Leads that need manual review ({FAILED_CSV}):")
+        print(f"\n  ── Leads that need manual review ({FAILED_CSV}) ──")
         for entry in validation_log:
             if entry["status"] == "FAIL":
                 print(f"    • {entry['email']}")
                 for issue in entry["issues"]:
-                    print(f"        - {issue}")
+                    # issue already contains a content snippet when applicable
+                    print(f"        ↳ {issue}")
 
     print(f"\n  Output CSV : {OUTPUT_CSV}")
     if failed_rows:
-        print(f"  Failed CSV : {FAILED_CSV}")
+        print(f"  Failed CSV : {FAILED_CSV}  (includes 'Failure_Reasons' column)")
+    print(f"  Log file   : {LOG_FILE}")
     print()
+
+    sys.stdout = sys.__stdout__
+    _log_handle.close()
+    print(f"[✓] Log written to {LOG_FILE}")
 
 
 if __name__ == "__main__":

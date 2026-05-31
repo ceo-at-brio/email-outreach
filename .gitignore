@@ -1,2 +1,21 @@
-.idea/
+# ── Secrets ───────────────────────────────────────────────────────────────────
 .env
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── Pipeline outputs (generated at runtime) ───────────────────────────────────
+pipeline_run_*.log
+Generated_Emails_*.csv
+Failed_Leads_*.csv

@@ -1,9 +1,8 @@
 import os
 from google import genai
+import config
 
-# Load your key
-API_KEY = "AIzaSyBiup-AaqYKz1EKDPX7v7oTepwVaL3Jduc"
-client = genai.Client(api_key=API_KEY)
+client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 print("Fetching approved models for your API key...\n")
 

@@ -3,13 +3,12 @@ import json
 import os
 import time
 from datetime import datetime
+import config
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-# Pulls API key from Environment Variables for security.
-# You can still paste it here for local testing, but remember to remove it before sharing!
-SERPAPI_KEY = "24665eb6b6bc537c76c0f6ed834fba4462f4ff9154f1855038afbd3c4ab827ce"
+SERPAPI_KEY = config.SERPAPI_KEY
 
 # 🚀 EXPANDED SOFTWARE CONSULTANCY QUERIES
 SEARCH_QUERIES = [
@@ -107,9 +106,9 @@ def process_results(data, seen_urls):
 
 
 def main():
-    if SERPAPI_KEY == "YOUR_SERPAPI_KEY_HERE" or not SERPAPI_KEY:
+    if not SERPAPI_KEY:
         print(
-            "\n[!] 🛑 ACTION REQUIRED: Please set your SerpApi key via environment variable or insert it into the script.\n")
+            "\n[!] ACTION REQUIRED: SERPAPI_KEY is missing. Add it to your .env file (see .env.example).\n")
         return
 
     all_leads = []

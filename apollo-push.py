@@ -4,15 +4,14 @@ import time
 import os
 import re
 import logging
+import config
 
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-APOLLO_API_KEY = "qHZgYECHVdxOrg4bb69-oQ"
+APOLLO_API_KEY = config.APOLLO_API_KEY
 APOLLO_SEQUENCE_ID = "6a114515588c920014d84d3c"
-
-# NEW: The email address connected to your Apollo account that will send the sequence
-SENDER_EMAIL = "parag@softwarebrio.in"
+SENDER_EMAIL = config.SENDER_EMAIL
 
 CSV_FILE_PATH = "Generated_Emails_POC_Output_20260523_002947.csv"  # Ensure this matches your file
 
