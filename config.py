@@ -10,7 +10,11 @@ _ENV_FILE = pathlib.Path(__file__).parent / ".env"
 
 
 def _load_env(path: pathlib.Path) -> None:
-    """Parse KEY=VALUE lines from .env into os.environ (skips already-set keys)."""
+    """Parse KEY=VALUE lines from .env into os.environ.
+
+    Values in .env always win over shell-level env vars so that
+    project-specific keys are never shadowed by stale shell exports.
+    """
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -20,8 +24,8 @@ def _load_env(path: pathlib.Path) -> None:
         key, _, val = line.partition("=")
         key = key.strip()
         val = val.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = val
+        if key:
+            os.environ[key] = val  # always override shell env vars
 
 
 _load_env(_ENV_FILE)

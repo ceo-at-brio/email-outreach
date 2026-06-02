@@ -20,8 +20,8 @@ from datetime import datetime
 # ============================================================
 # PIPELINE CONFIGURATION
 # ============================================================
-INPUT_CSV        = "Email - 3rd May - 27_4.csv"
-LEAD_LIMIT       = None                 # set None to process all rows
+INPUT_CSV        = "CLUTCH_LEAD_GEN - 4_5.csv"
+LEAD_LIMIT       = 10                 # set None to process all rows
 MAX_GEN_RETRIES  = 3       # retries per lead if validation fails
 RATE_LIMIT_SLEEP = 30      # seconds between leads — gives the 5 RPM (Gemini 2.5 Pro free) more breathing room
 
@@ -80,7 +80,7 @@ FIELD_RULES = {
     # missing <b> tags, empty values, and API errors cause retries.
     #  field_key                  max_chars  require_bold_tag
     "Intro_Subject":              (65,       False),
-    "Intro_Body":                 (420,      True),
+    "Intro_Body":                 (330,      True),
     "Generated_Followup_1":       (340,      True),
     "Generated_Followup_2":       (370,      True),
 }

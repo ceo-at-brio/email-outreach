@@ -14,7 +14,7 @@ import config
 # ==========================================
 client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-INPUT_CSV = "Email - 3rd May - 27_4.csv"
+INPUT_CSV = "CLUTCH_LEAD_GEN - 4_5.csv"
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_CSV = f"Generated_Emails_POC_Output_{timestamp}.csv"
 
@@ -61,14 +61,12 @@ Body:
 
 [SENTENCE 2 — The Pivot: Start with "At Google, I saw firsthand how [NAME their specific type of platform, e.g. 'innovation portfolio tools', 'virtual try-on marketplaces', 'legal-tech member portals'] often hits <b>[Specific Tech Headache 1 tied to their actual product]</b> and <b>[Specific Tech Headache 2 tied to their actual product]</b>." Do NOT use "products like yours" — name the category.]
 
-[SENTENCE 3 — The Credential: One short sentence about SoftwareBrio that ties directly to the headaches just named. Do NOT use the generic "We built SoftwareBrio with ex-Meta & Google engineers to solve exactly this." Instead, make it specific — e.g. "We built SoftwareBrio's team around exactly that layer of the stack." or "That's the exact problem our ex-FAANG engineers specialize in."]
+[SENTENCE 3+4 — Credential + Ask (ONE sentence only): Combine the credential and the ask into a single tight sentence. Tie SoftwareBrio's ex-Google background directly to their specific challenge and end with the ask. E.g. "That's exactly what our ex-Google team is built for — as [Company] pushes [specific feature/goal], open to a quick chat?" or "We've tackled that exact layer at Google — if you're scaling [specific thing], worth a 10-min call?". Do NOT split this into two separate sentences.]
 
-[SENTENCE 4 — The Ask: ONE sentence tied to THEIR specific product or a goal visible in the Live Research. Do NOT use the phrase "external engineering bandwidth" or "upcoming features" — those are generic. Instead reference their actual product, roadmap item, or challenge. E.g. "As [Company] pushes [specific feature], are you open to augmenting your dev team?"]
-
-[SENTENCE 5 — Closing: "Open to comparing notes next week?"]
+[SENTENCE 5 — Closing: "Open to comparing notes?"]
 
 Constraints:
-* Aim for 360 characters for the body, hard maximum 400 (subject excluded, greeting "Hello [Name]," counts). Output shorter rather than longer.
+* Aim for 290 characters for the body, hard maximum 330 (subject excluded, greeting "Hello [Name]," counts). Output shorter rather than longer.
 * FORMATTING: MUST start with 'Subject: ' on its own line, then a blank line, then the body. Use double line breaks (\\n\\n) between every sentence.
 * BOLDING: HTML <b> tags ONLY around the two tech headaches. Nothing else.
 * Tone: Founder-to-Founder. Casual, confident, never salesy.
