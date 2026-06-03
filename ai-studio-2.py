@@ -37,7 +37,9 @@ SYSTEM_INSTRUCTION = """
 You are Parag, Founder of SoftwareBrio. You write highly engaging, ultra-concise, and classy cold emails. 
 Rule 1: NEVER output markdown code blocks (like ```text).
 Rule 2: Do NOT include conversational filler. Output ONLY the raw text.
-Rule 3: Analyze the prospect's context. IF they seem highly technical (CTO/Engineering), use hard engineering concepts (e.g., CI/CD, database latency). IF they are business-focused (CEO/Founder), focus on business impact (e.g., speed-to-market, tech debt).
+Rule 3: Adapt ALL language to the reader's technical level:
+   - IF the prospect is highly technical (CTO, engineering lead, dev-tooling/infra company): use precise engineering concepts (e.g. CI/CD, database latency, event-driven sync).
+   - IF the prospect is NON-technical (CEO/founder of a non-software business, marketing, operations, healthcare, trades): use ONLY plain outcomes they feel day-to-day (e.g. hours saved each week, faster launches, less manual data entry, more revenue, smoother customer experience). Do NOT use engineering jargon — this explicitly includes "tech debt", "architecture", "latency", "API", "pipeline". A dairy marketer or a therapist must understand every word.
 """
 
 config = types.GenerateContentConfig(
@@ -61,11 +63,12 @@ Body:
 
 [SENTENCE 2 — The Pivot: Start with "At Google, I saw firsthand how [NAME their specific type of platform, e.g. 'innovation portfolio tools', 'virtual try-on marketplaces', 'legal-tech member portals'] often hits <b>[Specific Tech Headache 1 tied to their actual product]</b> and <b>[Specific Tech Headache 2 tied to their actual product]</b>." Do NOT use "products like yours" — name the category.]
 
-[SENTENCE 3+4 — Credential + Ask (ONE sentence only): Combine the credential and the ask into a single tight sentence. Tie SoftwareBrio's ex-Google background directly to their specific challenge and end with the ask. E.g. "That's exactly what our ex-Google team is built for — as [Company] pushes [specific feature/goal], open to a quick chat?" or "We've tackled that exact layer at Google — if you're scaling [specific thing], worth a 10-min call?". Do NOT split this into two separate sentences.]
+[SENTENCE 3 — Credential (ONE sentence, a STATEMENT — NO question, NO ask): Tie SoftwareBrio's ex-Google background directly to the specific challenge you just named, and connect it to their goal. End as a confident statement. E.g. "That's exactly the layer our ex-Google team is built for as [Company] scales [specific goal]." Do NOT put an ask or a question mark here — the closing line is the only ask.]
 
-[SENTENCE 5 — Closing: "Open to comparing notes?"]
+[SENTENCE 4 — Closing (the ONLY ask in the whole email): "Open to comparing notes?"]
 
 Constraints:
+* The email must contain EXACTLY ONE question mark (the closing "Open to comparing notes?"). The credential sentence must NOT end in a question.
 * Aim for 290 characters for the body, hard maximum 330 (subject excluded, greeting "Hello [Name]," counts). Output shorter rather than longer.
 * FORMATTING: MUST start with 'Subject: ' on its own line, then a blank line, then the body. Use double line breaks (\\n\\n) between every sentence.
 * BOLDING: HTML <b> tags ONLY around the two tech headaches. Nothing else.
@@ -75,37 +78,53 @@ Constraints:
 """
 
 FOLLOWUP_1_PROMPT = """
-Write a value-driven follow-up email.
+Write a value-FIRST follow-up email. The goal is to build TRUST by giving a useful insight or proof of competence — NOT to re-pitch or diagnose the prospect's problems for them.
+
+DISTINCT ROLE OF THIS EMAIL: This follow-up is about something they ALREADY HAVE TODAY — an existing feature/workflow — and the value is a CONCRETE DELIVERABLE you could hand over (a sketch, an example, a fix). Do NOT pitch a brand-new future feature here — that is the job of the FINAL follow-up. Keep this one grounded in their current product.
 
 Structure:
-* Start: "Hello {first_name}, I was thinking more about [name one SPECIFIC product feature or workflow from their context — not a generic concept]."
-* Value Drop: One sentence: identify the exact scaling trap for THAT specific workflow, then name the modern technical solution. Put <b>HTML bold tags</b> around only the technical solution name.
-* The Ask: ONE sentence that ties directly to the solution you just mentioned and their specific product — reference the product name or workflow by name. Do NOT use the generic phrase "If expanding your tech bandwidth is on your radar, I'd love to share how our ex-FAANG team approaches this." Instead, make the ask feel like a natural next step specific to their situation. E.g. "Given how central [their specific feature] is to [Company], happy to walk you through exactly how we'd build this — worth a 10-min call?" or "If [Company] is planning to scale [specific feature] this quarter, I can share how we'd tackle it — worth a quick chat?"
+* Start: "Hello {first_name}, following up on [name one SPECIFIC EXISTING product feature or workflow from their context — not a generic concept]." Keep it specific to their actual product.
+* Value Drop (the key sentence): Give ONE concrete, useful thing. Choose the best fit:
+    - LIGHT INDUSTRY PROOF (preferred): frame it as a pattern you've seen across their industry — e.g. "Teams in [their industry] that move to [the approach] usually see [a light, believable benefit]." Keep the benefit QUALITATIVE or loosely-quantified (e.g. "noticeably fewer support tickets", "hours back each week", "a meaningful lift in conversions") — do NOT cite a fake precise statistic or pretend it's a SoftwareBrio client result. This is an honest industry observation, not a case study.
+    - A specific OUTCOME framing — the tangible result of doing this right (e.g. "idle time at terminals drops noticeably"). Lead with the result, not the architecture.
+    - OR a genuine free insight about THEIR specific product they could act on.
+  Put <b>HTML bold tags</b> around the single most important phrase (the benefit, result, or — only if they are technical — the solution name).
+* CRITICAL — Match the language to the reader (see system instruction):
+    - IF the prospect is technical (CTO, engineering, dev-tooling, infra): you MAY use precise engineering terms (e.g. event-driven sync, hermetic build containers) and frame value as a technical result ("cut CI times", "reproducible across platforms").
+    - IF the prospect is non-technical (marketing, operations, founder of a non-software business): use PLAIN business language about what their team feels day-to-day. Do NOT use engineering jargon like "event-driven architecture", "API latency", "headless CMS" — they will not understand it.
+* Do NOT assert "the main scaling trap is X" or "the modern fix is Y" — this presumes you know their problem better than they do and reads as formulaic. Phrase value as something you've SEEN work, not a diagnosis of their flaws.
+* The Ask: ONE sentence offering something LOWER-friction than a call. VARY it — do NOT always ask for a call (the intro already did). Prefer offering a concrete artifact: "Want a quick 1-page sketch of how we'd build it?", "Want a before/after example?", "Want me to send the rough architecture? Takes 2 mins to read." Reference their product/company by name.
 * Do NOT add any sign-off or signature line — it will be appended automatically.
 
 Constraints:
 * Aim for 285 characters, hard maximum 320. Output shorter rather than longer. No fluff.
 * FORMATTING: Use double line breaks (\\n\\n) between every sentence.
-* BOLDING: Only bold the technical solution name.
-* Do NOT invent or mention past clients.
-* Do NOT use the phrases "tech bandwidth", "ex-FAANG team approaches this", or "on your radar" — these are banned as too generic.
+* BOLDING: Bold exactly one phrase (the result, deliverable, or technical solution name).
+* Do NOT invent or mention past clients or specific client names. You MAY say "we've seen" or "we've done this on similar systems" without naming anyone.
+* Do NOT use the formulaic phrases "scaling trap", "the modern fix is", "I was thinking more about", "tech bandwidth", or "on your radar" — these are banned as too generic/repetitive.
 * Do NOT use banned words.
 """
 
 FOLLOWUP_2_PROMPT = """
-Write a final follow-up mail designed to force a reply (includes anti-ghosting).
+Write a final follow-up mail (a graceful "breakup" email) designed to force a reply. It drops ONE sharp, FORWARD-LOOKING idea, then gracefully exits.
+
+DISTINCT ROLE OF THIS EMAIL: Unlike the earlier follow-up (which was about their CURRENT product), this one looks to their FUTURE / roadmap — a "where you could take this next" idea — and then bows out. Do NOT repeat a present-tense fix; this is a forward-looking parting thought plus a clean exit. Do NOT open with "following up on [feature]" (that was the previous email's opener).
 
 Structure:
-* Start: "Hello {first_name}, wrapping up my outreach here."
-* The Hook: Pitch ONE highly specific tech/AI feature idea for their platform — name the feature in <b>HTML bold tags</b>. The idea must be grounded in something real from the company context or live research (their product type, a specific gap, or a trend in their industry).
-* The Ask: ONE sentence that references building THAT specific feature for THEIR product — use the company or product name, not a generic "features like that". E.g. "If [Company] ever wants to build [feature name], our ex-FAANG team would love to tackle it — open to a quick intro?"
-* Anti-Ghosting close: End with exactly this sentence (do not change it): "If you're completely locked in on dev bandwidth right now, totally fine—just let me know so I can close my file!"
+* Start: A short breakup-style opener that signals this is the LAST email. e.g. "Hello {first_name}, I'll get out of your inbox after this —" or "Hello {first_name}, last idea before I close this out —". Do NOT reuse "wrapping up my outreach here" and do NOT mirror the previous email's "following up on…".
+* The Idea (the key sentence — keep it SHORT, ~90 chars): Drop ONE concrete, FORWARD-LOOKING idea for where THEIR product could go next — framed as "down the road, the biggest lever is X" or "the next step we'd be excited to build is Y". A sharp peer's parting tip about their FUTURE, NOT a present-day fix and NOT a moonshot. Bold the single most important phrase in <b>HTML bold tags</b>.
+* CRITICAL — Do NOT default to "AI". Most ideas should be a smart, practical improvement that is NOT AI. Only suggest an AI/ML feature if it is genuinely the obvious best fit for that specific product — and even then, describe the OUTCOME, not the buzzword. Banned framings: "AI-powered", "AI-driven", "AI model", "LLM-powered" as the headline of the idea.
+* Match the language to the reader (see system instruction): technical recipients get precise terms; non-technical recipients (marketing, ops, non-software founders) get plain business language about what their team feels day-to-day.
+* The Ask: ONE SHORT, low-pressure clause — e.g. "Worth a look? We'd love to build it." VARY it; do NOT reuse "our ex-Google team would love to tackle it" every time. Humble and easy to say yes/no to.
+* Anti-Ghosting close (write it fresh each time, keep it SHORT ~55-65 chars): A single brief line that BOTH (a) gives permission to say no, AND (b) uses the "close my file" finality that nudges a reply. Vary the wording — e.g. "If the timing's off, just say so and I'll close your file." or "No worries if now's not the time — a quick no and I'll close my file." Do NOT write the long version "If you're completely locked in on dev bandwidth right now, totally fine—just let me know so I can close my file!" — that is too long.
 * Do NOT add any sign-off or signature line — it will be appended automatically.
 
 Constraints:
-* Aim for 315 characters, hard maximum 350. Output shorter rather than longer.
-* FORMATTING: Use double line breaks (\n\n) between every sentence.
-* Do NOT use the phrase "If you're ever looking for a reliable, ex-FAANG dev team to build features like that, keep us in mind." — this is banned as too generic. The ask must name the company and feature specifically.
+* Aim for 250 characters, hard maximum 290. Output shorter rather than longer. Every sentence must be tight.
+* FORMATTING: Use double line breaks (\\n\\n) between every sentence.
+* BOLDING: Bold exactly one phrase in the idea sentence.
+* Do NOT invent or name specific past clients. "We've seen" / "we usually see" is fine.
+* Do NOT use the formulaic phrases "wrapping up my outreach here", "our ex-Google team would love to tackle it", "our ex-FAANG team", the long "completely locked in on dev bandwidth" close, or lead the idea with "AI-powered"/"AI-driven" — these are banned as too generic/repetitive.
 * Do NOT use banned words.
 """
 
@@ -247,7 +266,7 @@ def generate_for_lead(lead_context, first_name, company):
         fu1_msg = "Skipped due to Intro error"
 
     if "ERROR:" not in fu1_msg:
-        fu2_msg = generate_with_constraints(chat, FOLLOWUP_2_PROMPT.format(first_name=first_name), max_chars=350)
+        fu2_msg = generate_with_constraints(chat, FOLLOWUP_2_PROMPT.format(first_name=first_name), max_chars=290)
     else:
         fu2_msg = "Skipped due to Follow-up 1 error"
 
